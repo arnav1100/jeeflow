@@ -106,6 +106,12 @@ export interface GeneratedRevision {
   revisionNumber: number;
   intervalDays: number;
   dueDate: string;
+
+  status:
+    | "pending"
+    | "scheduled"
+    | "done"
+    | "skipped";
 }
 
 export interface FeasibilityResult {
