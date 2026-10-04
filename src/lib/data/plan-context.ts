@@ -16,7 +16,6 @@ import type {
   EngineExistingRevision,
   SubjectSlug,
 } from "@/lib/scheduling/types";
-import { getJeeSequenceOrder } from "@/lib/scheduling/jee-sequence";
 
 export async function buildEngineChapters(
   userId: string,
@@ -83,15 +82,8 @@ export async function buildEngineChapters(
      * If a DB chapter name does not match,
      * fall back to its existing orderIndex.
      */
-    const sequenceOrder =
-      getJeeSequenceOrder(
-        subjectSlug,
-        c.name,
-      ) ??
-      (c.orderIndex > 0
-        ? c.orderIndex
-        : 999);
-
+    const sequenceOrder = c.orderIndex;
+    
     result.push({
       chapterId: c.id,
       subjectSlug,
