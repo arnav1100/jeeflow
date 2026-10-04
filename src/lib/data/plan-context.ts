@@ -151,15 +151,28 @@ export async function buildEngineChapters(
   return result;
 }
 
-export async function buildAvailabilityMap(
+export async function buildAvailabilityWindows(
   userId: string,
-): Promise<Record<number, number>> {
+) {
   const rows = await db
     .select()
     .from(availability)
     .where(
-      eq(availability.userId, userId),
+      eq(
+        availability.userId,
+        userId,
+      ),
     );
+
+  return rows.map((row) => ({
+    dayOfWeek:
+      row.dayOfWeek,
+    startTime:
+      row.startTime,
+    endTime:
+      row.endTime,
+  }));
+}
 
   const map: Record<number, number> = {
     0: 0,
