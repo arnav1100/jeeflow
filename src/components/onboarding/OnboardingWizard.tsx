@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
+import TimeInput from "@/components/ui/TimeInput";
 import { DAY_LABELS, DEFAULT_STATE_SEED, FixedEventDraft, OnboardingState } from "./types";
 
 const STORAGE_KEY = "jeeflow_onboarding_draft";
@@ -217,19 +218,9 @@ function StepAvailability({ state, update }: StepProps) {
             <div className="space-y-2">
               {d.windows.map((w, j) => (
                 <div key={j} className="flex items-center gap-2">
-                  <input
-                    type="time"
-                    value={w.start}
-                    onChange={(e) => setWindow(i, j, "start", e.target.value)}
-                    className="w-full rounded-lg border border-slate-200 px-2 py-1.5 text-sm"
-                  />
+                  <TimeInput value={w.start} onChange={(v) => setWindow(i, j, "start", v)} />
                   <span className="text-xs text-[#94A3B8]">to</span>
-                  <input
-                    type="time"
-                    value={w.end}
-                    onChange={(e) => setWindow(i, j, "end", e.target.value)}
-                    className="w-full rounded-lg border border-slate-200 px-2 py-1.5 text-sm"
-                  />
+                  <TimeInput value={w.end} onChange={(v) => setWindow(i, j, "end", v)} />
                   {d.windows.length > 1 && (
                     <button type="button" onClick={() => removeWindow(i, j)} className="text-xs text-[#EF4444]">
                       ✕
@@ -306,19 +297,9 @@ function StepCommitments({ state, update }: StepProps) {
               </button>
             </div>
             <div className="flex items-center gap-2">
-              <input
-                type="time"
-                value={ev.start}
-                onChange={(e) => updateEvent(ev.id, { start: e.target.value })}
-                className="rounded-lg border border-slate-200 px-2 py-1.5 text-sm"
-              />
+              <TimeInput value={ev.start} onChange={(v) => updateEvent(ev.id, { start: v })} />
               <span className="text-xs text-[#94A3B8]">to</span>
-              <input
-                type="time"
-                value={ev.end}
-                onChange={(e) => updateEvent(ev.id, { end: e.target.value })}
-                className="rounded-lg border border-slate-200 px-2 py-1.5 text-sm"
-              />
+              <TimeInput value={ev.end} onChange={(v) => updateEvent(ev.id, { end: v })} />
             </div>
             <div className="flex flex-wrap gap-1.5">
               {DAY_LABELS.map((label, idx) => (
