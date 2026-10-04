@@ -1,6 +1,6 @@
 import { requireOnboardedUser } from "@/lib/current-user";
 import { getActivePlan, getTasksForPlan } from "@/lib/data/tasks";
-import { todayIST } from "@/lib/date";
+import { getStudyDate } from "@/lib/study-day";
 import PlannerView, { type PlanSummary } from "@/components/planner/PlannerView";
 
 export const dynamic = "force-dynamic";
@@ -29,7 +29,7 @@ export default async function PlannerPage() {
       key={plan?.id ?? "none"}
       plan={summary}
       initialTasks={tasks}
-      today={todayIST()}
+      today={getStudyDate()}
       defaultStrategy={profile?.strategy ?? "full_syllabus"}
       defaultDays={profile?.planDurationDays || 60}
     />
