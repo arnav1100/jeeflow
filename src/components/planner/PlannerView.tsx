@@ -207,6 +207,32 @@ export default function PlannerView({
       [tasks, today],
     );
 
+    const nextTaskDate = useMemo(() => {
+    const futureDates = tasks
+      .filter(
+        (task) =>
+          task.scheduledDate > today &&
+          task.status !== "skipped",
+      )
+      .map(
+        (task) => task.scheduledDate,
+      )
+      .sort();
+
+    return futureDates[0] ?? null;
+  }, [tasks, today]);
+
+  const nextDayTasks = useMemo(() => {
+    if (!nextTaskDate) {
+      return [];
+    }
+
+    return tasks.filter(
+      (task) =>
+        task.scheduledDate === nextTaskDate,
+    );
+  }, [tasks, nextTaskDate]);
+
   const backlog =
     useMemo(
       () =>
@@ -621,15 +647,43 @@ export default function PlannerView({
             </div>
 
             <div className="mt-4">
-              <TaskList
-                tasks={
-                  todayTasks
-                }
-                onToggle={
-                  toggle
-                }
-                emptyText="No tasks planned for today."
-              />
+              {todayTasks.length > 0 ? (
+  <TaskList
+    tasks={todayTasks}
+    onToggle={toggle}
+    emptyText="No tasks planned for today."
+  />
+) : nextTaskDate ? (
+  <div className="rounded-2xl border border-slate-200 bg-white p-4">
+    <p className="text-sm font-bold">
+      Today&apos;s study window is over
+    </p>
+
+    <p className="mt-1 text-sm text-[#64748B]">
+      Your next plan starts{" "}
+      {formatDayLabel(nextTaskDate, {
+        weekday: "long",
+      })}
+      .
+    </p>
+
+    <div className="mt-4">
+      <p className="mb-2 text-xs font-bold uppercase tracking-wide text-[#64748B]">
+        Next up
+      </p>
+
+      <TaskList
+        tasks={nextDayTasks}
+        onToggle={toggle}
+        emptyText="No upcoming tasks."
+      />
+    </div>
+  </div>
+) : (
+  <div className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-[#64748B]">
+    Nothing is planned for today.
+  </div>
+)}
             </div>
 
             {backlog.length >
