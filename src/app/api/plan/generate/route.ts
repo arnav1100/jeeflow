@@ -210,11 +210,11 @@ if (revisionsToInsert.length > 0) {
           r.intervalDays,
         dueDate: r.dueDate,
         status:
-          r.status === "done"
-            ? ("done" as const)
-            : r.status === "skipped"
-              ? ("skipped" as const)
-              : ("scheduled" as const),
+  r.status === "skipped"
+    ? ("skipped" as const)
+    : r.status === "pending"
+      ? ("pending" as const)
+      : ("scheduled" as const),
       })),
     );
 }
