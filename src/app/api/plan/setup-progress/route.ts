@@ -8,10 +8,9 @@ import { z } from "zod";
 import { getSession } from "@/lib/auth";
 import { db } from "@/db";
 import {
-  userChapters,
   profiles,
+  userChapters,
 } from "@/db/schema";
-
 import { buildEngineChapters } from "@/lib/data/plan-context";
 import { computeChapterStatus } from "@/lib/scheduling/chapter-status";
 import type { SubjectSlug } from "@/lib/scheduling/types";
@@ -24,33 +23,30 @@ const SUBJECTS: SubjectSlug[] = [
   "chemistry",
 ];
 
-const subjectSchema = z.object({
-  subjectSlug: z.enum([
-    "maths",
-    "physics",
-    "chemistry",
+const chapterSchema = z.object({
+  chapterId: z.string().uuid(),
+
+  state: z.enum([
+    "not_started",
+    "partial",
+    "studied",
   ]),
 
-  currentChapterId:
-    z.string().uuid(),
+  lectureProgressMinutes: z
+    .number()
+    .int()
+    .min(0)
+    .optional(),
 
-  lectureState: z.enum([
-    "not_started",
-    "in_progress",
+  lectureDone: z.boolean(),
+  practiceDone: z.boolean(),
+  pyqDone: z.boolean(),
+
+  revisionStatus: z.enum([
+    "pending",
+    "partial",
     "done",
   ]),
-
-  lectureProgressMinutes:
-    z.number()
-      .int()
-      .min(0)
-      .optional(),
-
-  practiceDone:
-    z.boolean(),
-
-  pyqDone:
-    z.boolean(),
 });
 
 const patchSchema = z.object({
@@ -59,38 +55,39 @@ const patchSchema = z.object({
     "progress",
   ]),
 
-  subjects:
-    z.array(subjectSchema)
-      .optional(),
+  chapters: z
+    .array(chapterSchema)
+    .optional(),
 });
 
-/**
- * Read current planner setup/progress.
- */
 export async function GET() {
   const session =
     await getSession();
 
   if (!session) {
     return NextResponse.json(
-      {
-        error:
-          "Not authenticated.",
-      },
+      { error: "Not authenticated." },
       { status: 401 },
     );
   }
 
-    const profileRows = await db
-    .select()
-    .from(profiles)
-    .where(
-      eq(
-        profiles.userId,
+  const [engineChapters, profileRows] =
+    await Promise.all([
+      buildEngineChapters(
         session.userId,
       ),
-    )
-    .limit(1);
+
+      db
+        .select()
+        .from(profiles)
+        .where(
+          eq(
+            profiles.userId,
+            session.userId,
+          ),
+        )
+        .limit(1),
+    ]);
 
   const profile =
     profileRows[0];
@@ -104,17 +101,14 @@ export async function GET() {
   const setupCompleted =
     strategyConfig.plannerSetupCompleted ===
     true;
-  
- const chapters =
-    await buildEngineChapters(
-      session.userId,
-    );
 
   const subjects =
     SUBJECTS.map(
-      (subjectSlug) => {
-        const subjectChapters =
-          chapters
+      (subjectSlug) => ({
+        subjectSlug,
+
+        chapters:
+          engineChapters
             .filter(
               (chapter) =>
                 chapter.subjectSlug ===
@@ -126,63 +120,73 @@ export async function GET() {
                 b.sequenceOrder,
             )
             .map(
-              (chapter) => ({
-                chapterId:
-                  chapter.chapterId,
-
-                name:
-                  chapter.name,
-
-                sequenceOrder:
-                  chapter.sequenceOrder,
-
-                status:
-                  chapter.status,
-
-                lectureDurationMinutes:
-                  chapter.lectureDurationMinutes,
-
-                lectureProgressMinutes:
-                  chapter.lectureProgressMinutes,
-
-                lectureComplete:
+              (chapter) => {
+                const lectureDone =
                   chapter.remainingLectureMinutes ===
-                  0,
+                  0;
 
-                practiceComplete:
+                const practiceDone =
                   chapter.practicePendingMinutes ===
-                  0,
+                  0;
 
-                pyqComplete:
+                const pyqDone =
                   chapter.pyqPendingMinutes ===
-                  0,
+                  0;
 
-                revisionStatus:
-                  chapter.revisionStatus,
+                const coreDone =
+                  lectureDone &&
+                  practiceDone &&
+                  pyqDone;
 
-                manualDurationSet:
-                  chapter.manualDurationSet,
-              }),
-            );
+                const state:
+                  | "not_started"
+                  | "partial"
+                  | "studied" =
+                  coreDone
+                    ? "studied"
+                    : chapter.lectureProgressMinutes >
+                          0 ||
+                        practiceDone ||
+                        pyqDone
+                      ? "partial"
+                      : "not_started";
 
-        return {
-          subjectSlug,
-          chapters:
-            subjectChapters,
-        };
-      },
+                return {
+                  chapterId:
+                    chapter.chapterId,
+
+                  name:
+                    chapter.name,
+
+                  sequenceOrder:
+                    chapter.sequenceOrder,
+
+                  state,
+
+                  lectureDurationMinutes:
+                    chapter.lectureDurationMinutes,
+
+                  lectureProgressMinutes:
+                    chapter.lectureProgressMinutes,
+
+                  lectureDone,
+                  practiceDone,
+                  pyqDone,
+
+                  revisionStatus:
+                    chapter.revisionStatus,
+                };
+              },
+            ),
+      }),
     );
 
   return NextResponse.json({
-  setupCompleted,
-  subjects,
-});
+    setupCompleted,
+    subjects,
+  });
 }
 
-/**
- * Save "fresh start" or student's current
- * subject position.
- */
 export async function PATCH(
   req: NextRequest,
 ) {
@@ -191,10 +195,7 @@ export async function PATCH(
 
   if (!session) {
     return NextResponse.json(
-      {
-        error:
-          "Not authenticated.",
-      },
+      { error: "Not authenticated." },
       { status: 401 },
     );
   }
@@ -205,9 +206,7 @@ export async function PATCH(
       .catch(() => ({}));
 
   const parsed =
-    patchSchema.safeParse(
-      body,
-    );
+    patchSchema.safeParse(body);
 
   if (!parsed.success) {
     return NextResponse.json(
@@ -215,7 +214,7 @@ export async function PATCH(
         error:
           parsed.error.issues[0]
             ?.message ??
-          "Invalid setup.",
+          "Invalid preparation data.",
       },
       { status: 400 },
     );
@@ -224,34 +223,20 @@ export async function PATCH(
   const input =
     parsed.data;
 
-  const chapters =
-    await buildEngineChapters(
-      session.userId,
-    );
+  const now = new Date();
 
-  /**
-   * FRESH START
-   *
-   * Reset study progress for every chapter.
-   * Durations/settings are preserved.
-   */
   if (input.mode === "fresh") {
     await db
       .update(userChapters)
       .set({
         lectureProgressMinutes: 0,
-        practiceStatus:
-          "pending",
-        pyqStatus:
-          "pending",
-        revisionStatus:
-          "pending",
-        status:
-          "not_started",
+        practiceStatus: "pending",
+        pyqStatus: "pending",
+        revisionStatus: "pending",
+        status: "not_started",
         startedAt: null,
         completedAt: null,
-        updatedAt:
-          new Date(),
+        updatedAt: now,
       })
       .where(
         eq(
@@ -259,8 +244,165 @@ export async function PATCH(
           session.userId,
         ),
       );
+  } else {
+    if (!input.chapters) {
+      return NextResponse.json(
+        {
+          error:
+            "Chapter progress is required.",
+        },
+        { status: 400 },
+      );
+    }
 
-        const profileRows = await db
+    const existingRows =
+      await db
+        .select()
+        .from(userChapters)
+        .where(
+          eq(
+            userChapters.userId,
+            session.userId,
+          ),
+        );
+
+    const existingMap =
+      new Map(
+        existingRows.map(
+          (row) => [
+            row.chapterId,
+            row,
+          ],
+        ),
+      );
+
+    await db.transaction(
+      async (tx) => {
+        await Promise.all(
+          input.chapters!.map(
+            async (chapter) => {
+              const existing =
+                existingMap.get(
+                  chapter.chapterId,
+                );
+
+              if (!existing) {
+                return;
+              }
+
+              let lectureProgress = 0;
+              let practiceStatus =
+                "pending";
+              let pyqStatus =
+                "pending";
+
+              if (
+                chapter.state ===
+                "studied"
+              ) {
+                lectureProgress =
+                  existing.lectureDurationMinutes;
+
+                practiceStatus =
+                  "done";
+
+                pyqStatus =
+                  "done";
+              }
+
+              if (
+                chapter.state ===
+                "partial"
+              ) {
+                lectureProgress =
+                  chapter.lectureDone
+                    ? existing.lectureDurationMinutes
+                    : Math.min(
+                        existing.lectureDurationMinutes,
+                        Math.max(
+                          0,
+                          chapter.lectureProgressMinutes ??
+                            0,
+                        ),
+                      );
+
+                practiceStatus =
+                  chapter.practiceDone
+                    ? "done"
+                    : "pending";
+
+                pyqStatus =
+                  chapter.pyqDone
+                    ? "done"
+                    : "pending";
+              }
+
+              const revisionStatus =
+                chapter.revisionStatus;
+
+              const status =
+                computeChapterStatus({
+                  lectureDurationMinutes:
+                    existing.lectureDurationMinutes,
+
+                  lectureProgressMinutes:
+                    lectureProgress,
+
+                  practiceStatus,
+
+                  pyqStatus,
+
+                  revisionStatus,
+                });
+
+              await tx
+                .update(userChapters)
+                .set({
+                  lectureProgressMinutes:
+                    lectureProgress,
+
+                  practiceStatus,
+                  pyqStatus,
+                  revisionStatus,
+                  status,
+
+                  startedAt:
+                    status ===
+                    "not_started"
+                      ? null
+                      : existing.startedAt ??
+                        now,
+
+                  completedAt:
+                    status ===
+                    "completed"
+                      ? existing.completedAt ??
+                        now
+                      : null,
+
+                  updatedAt: now,
+                })
+                .where(
+                  and(
+                    eq(
+                      userChapters.userId,
+                      session.userId,
+                    ),
+                    eq(
+                      userChapters.chapterId,
+                      chapter.chapterId,
+                    ),
+                  ),
+                );
+            },
+          ),
+        );
+      },
+    );
+  }
+
+  const profileRows =
+    await db
       .select()
       .from(profiles)
       .where(
@@ -270,307 +412,6 @@ export async function PATCH(
         ),
       )
       .limit(1);
-
-    const currentConfig =
-      (profileRows[0]?.strategyConfig as Record<
-        string,
-        unknown
-      >) ?? {};
-
-    await db
-      .update(profiles)
-      .set({
-        strategyConfig: {
-          ...currentConfig,
-          plannerSetupCompleted:
-            true,
-        },
-        updatedAt:
-          new Date(),
-      })
-      .where(
-        eq(
-          profiles.userId,
-          session.userId,
-        ),
-      );
-
-    return NextResponse.json({
-      ok: true,
-      mode: "fresh",
-    });
-  }
-
-  if (
-    !input.subjects ||
-    input.subjects.length !== 3
-  ) {
-    return NextResponse.json(
-      {
-        error:
-          "Progress is required for all three subjects.",
-      },
-      { status: 400 },
-    );
-  }
-
-  const now = new Date();
-
-  await db.transaction(
-    async (tx) => {
-      for (const setup of input.subjects!) {
-        const subjectChapters =
-          chapters
-            .filter(
-              (chapter) =>
-                chapter.subjectSlug ===
-                setup.subjectSlug,
-            )
-            .sort(
-              (a, b) =>
-                a.sequenceOrder -
-                b.sequenceOrder,
-            );
-
-        const currentIndex =
-          subjectChapters.findIndex(
-            (chapter) =>
-              chapter.chapterId ===
-              setup.currentChapterId,
-          );
-
-        if (
-          currentIndex < 0
-        ) {
-          throw new Error(
-            `Invalid chapter for ${setup.subjectSlug}.`,
-          );
-        }
-
-        /*
-         * Chapters before selected current chapter:
-         *
-         * Core study considered done.
-         * Revisions remain pending.
-         */
-        for (
-          let i = 0;
-          i < currentIndex;
-          i++
-        ) {
-          const chapter =
-            subjectChapters[i];
-
-          await tx
-            .update(userChapters)
-            .set({
-              lectureProgressMinutes:
-                chapter.lectureDurationMinutes,
-
-              practiceStatus:
-                "done",
-
-              pyqStatus:
-                "done",
-
-              revisionStatus:
-                "pending",
-
-              status:
-                "revision_pending",
-
-              startedAt:
-                now,
-
-              completedAt:
-                null,
-
-              updatedAt:
-                now,
-            })
-            .where(
-              and(
-                eq(
-                  userChapters.userId,
-                  session.userId,
-                ),
-                eq(
-                  userChapters.chapterId,
-                  chapter.chapterId,
-                ),
-              ),
-            );
-        }
-
-        /*
-         * Current selected chapter.
-         */
-        const current =
-          subjectChapters[
-            currentIndex
-          ];
-
-        let lectureProgress =
-          0;
-
-        if (
-          setup.lectureState ===
-          "done"
-        ) {
-          lectureProgress =
-            current.lectureDurationMinutes;
-        }
-
-        if (
-          setup.lectureState ===
-          "in_progress"
-        ) {
-          lectureProgress =
-            Math.min(
-              current.lectureDurationMinutes,
-              Math.max(
-                0,
-                setup.lectureProgressMinutes ??
-                  0,
-              ),
-            );
-        }
-
-        const practiceStatus =
-          setup.practiceDone
-            ? "done"
-            : "pending";
-
-        const pyqStatus =
-          setup.pyqDone
-            ? "done"
-            : "pending";
-
-        const revisionStatus =
-          "pending";
-
-        const status =
-          computeChapterStatus({
-            lectureDurationMinutes:
-              current.lectureDurationMinutes,
-
-            lectureProgressMinutes:
-              lectureProgress,
-
-            practiceStatus,
-
-            pyqStatus,
-
-            revisionStatus,
-          });
-
-        await tx
-          .update(userChapters)
-          .set({
-            lectureProgressMinutes:
-              lectureProgress,
-
-            practiceStatus,
-
-            pyqStatus,
-
-            revisionStatus,
-
-            status,
-
-            startedAt:
-              status ===
-              "not_started"
-                ? null
-                : now,
-
-            completedAt:
-              null,
-
-            updatedAt:
-              now,
-          })
-          .where(
-            and(
-              eq(
-                userChapters.userId,
-                session.userId,
-              ),
-              eq(
-                userChapters.chapterId,
-                current.chapterId,
-              ),
-            ),
-          );
-
-        /*
-         * Everything AFTER current chapter
-         * becomes not started.
-         */
-        for (
-          let i =
-            currentIndex + 1;
-          i <
-          subjectChapters.length;
-          i++
-        ) {
-          const chapter =
-            subjectChapters[i];
-
-          await tx
-            .update(userChapters)
-            .set({
-              lectureProgressMinutes:
-                0,
-
-              practiceStatus:
-                "pending",
-
-              pyqStatus:
-                "pending",
-
-              revisionStatus:
-                "pending",
-
-              status:
-                "not_started",
-
-              startedAt:
-                null,
-
-              completedAt:
-                null,
-
-              updatedAt:
-                now,
-            })
-            .where(
-              and(
-                eq(
-                  userChapters.userId,
-                  session.userId,
-                ),
-                eq(
-                  userChapters.chapterId,
-                  chapter.chapterId,
-                ),
-              ),
-            );
-        }
-      }
-    },
-  );
-
-    const profileRows = await db
-    .select()
-    .from(profiles)
-    .where(
-      eq(
-        profiles.userId,
-        session.userId,
-      ),
-    )
-    .limit(1);
 
   const currentConfig =
     (profileRows[0]?.strategyConfig as Record<
@@ -586,8 +427,7 @@ export async function PATCH(
         plannerSetupCompleted:
           true,
       },
-      updatedAt:
-        new Date(),
+      updatedAt: now,
     })
     .where(
       eq(
@@ -598,6 +438,6 @@ export async function PATCH(
 
   return NextResponse.json({
     ok: true,
-    mode: "progress",
+    mode: input.mode,
   });
 }
