@@ -5,9 +5,7 @@ import {
   useMemo,
   useState,
 } from "react";
-import {
-  useRouter,
-} from "next/navigation";
+import { useRouter } from "next/navigation";
 
 import PlanSetup from "@/components/planner/PlanSetup";
 import DailyCheckIn from "@/components/planner/DailyCheckIn";
@@ -18,7 +16,6 @@ import TaskList, {
 import type { TaskItem } from "@/components/tasks/types";
 
 import {
-  addDaysYmd,
   formatDayLabel,
 } from "@/lib/date";
 import { formatMinutesAsHm } from "@/lib/scheduling/lecture-time";
@@ -79,8 +76,13 @@ export default function PlannerView({
   const router =
     useRouter();
 
-  const [tasks, setTasks] =
-    useState(initialTasks);
+  const [
+    tasks,
+    setTasks,
+  ] =
+    useState<TaskItem[]>(
+      initialTasks,
+    );
 
   const [
     setupChecked,
@@ -102,7 +104,10 @@ export default function PlannerView({
     setShowGenerate,
   ] = useState(!plan);
 
-  const [days, setDays] =
+  const [
+    days,
+    setDays,
+  ] =
     useState(defaultDays);
 
   const [
@@ -121,7 +126,10 @@ export default function PlannerView({
     setGenerating,
   ] = useState(false);
 
-  const [error, setError] =
+  const [
+    error,
+    setError,
+  ] =
     useState<string | null>(
       null,
     );
@@ -129,73 +137,100 @@ export default function PlannerView({
   const [
     todayCapacity,
     setTodayCapacity,
-  ] = useState<number | null>(
-    null,
-  );
+  ] = useState<
+    number | null
+  >(null);
 
+  /*
+   * ============================================
+   * LOAD SETUP STATUS + TODAY'S REAL CAPACITY
+   * ============================================
+   */
   useEffect(() => {
     let cancelled = false;
 
-    Promise.all([
-      fetch(
-        "/api/plan/setup-progress",
-        {
-          cache: "no-store",
-        },
-      ).then((r) =>
-        r.json(),
-      ),
+    async function load() {
+      try {
+        const [
+          setupResponse,
+          capacityResponse,
+        ] =
+          await Promise.all([
+            fetch(
+              "/api/plan/setup-progress",
+              {
+                cache:
+                  "no-store",
+              },
+            ),
 
-      fetch(
-        "/api/plan/today-capacity",
-        {
-          cache: "no-store",
-        },
-      ).then((r) =>
-        r.json(),
-      ),
-    ])
-      .then(
-        ([
-          setup,
-          capacity,
-        ]) => {
-          if (cancelled) {
-            return;
-          }
+            fetch(
+              "/api/plan/today-capacity",
+              {
+                cache:
+                  "no-store",
+              },
+            ),
+          ]);
 
+        const [
+          setupData,
+          capacityData,
+        ] =
+          await Promise.all([
+            setupResponse.json(),
+            capacityResponse.json(),
+          ]);
+
+        if (cancelled) {
+          return;
+        }
+
+        if (
+          setupResponse.ok
+        ) {
           setSetupDone(
-            setup.setupCompleted ===
+            setupData.setupCompleted ===
               true,
           );
+        }
 
-          if (
-            typeof capacity.schedulableMinutes ===
+        if (
+          capacityResponse.ok &&
+          typeof capacityData.schedulableMinutes ===
             "number"
-          ) {
-            setTodayCapacity(
-              capacity.schedulableMinutes,
-            );
-          }
-        },
-      )
-      .catch(() => {
+        ) {
+          setTodayCapacity(
+            capacityData.schedulableMinutes,
+          );
+        }
+      } catch {
         if (!cancelled) {
           setError(
             "Could not load planner information.",
           );
         }
-      })
-      .finally(() => {
+      } finally {
         if (!cancelled) {
-          setSetupChecked(true);
+          setSetupChecked(
+            true,
+          );
         }
-      });
+      }
+    }
+
+    load();
 
     return () => {
       cancelled = true;
     };
   }, []);
+
+  /*
+   * ============================================
+   * TASK GROUPS
+   * ============================================
+   */
 
   const todayTasks =
     useMemo(
@@ -205,35 +240,58 @@ export default function PlannerView({
             task.scheduledDate ===
             today,
         ),
-      [tasks, today],
+      [
+        tasks,
+        today,
+      ],
     );
 
-    const nextTaskDate = useMemo(() => {
-    const futureDates = tasks
-      .filter(
+  const nextTaskDate =
+    useMemo(() => {
+      const dates =
+        tasks
+          .filter(
+            (task) =>
+              task.scheduledDate >
+                today &&
+              task.status !==
+                "skipped",
+          )
+          .map(
+            (task) =>
+              task.scheduledDate,
+          )
+          .sort();
+
+      return (
+        dates[0] ??
+        null
+      );
+    }, [
+      tasks,
+      today,
+    ]);
+
+  const nextDayTasks =
+    useMemo(() => {
+      if (!nextTaskDate) {
+        return [];
+      }
+
+      return tasks.filter(
         (task) =>
-          task.scheduledDate > today &&
-          task.status !== "skipped",
-      )
-      .map(
-        (task) => task.scheduledDate,
-      )
-      .sort();
+          task.scheduledDate ===
+          nextTaskDate,
+      );
+    }, [
+      tasks,
+      nextTaskDate,
+    ]);
 
-    return futureDates[0] ?? null;
-  }, [tasks, today]);
-
-  const nextDayTasks = useMemo(() => {
-    if (!nextTaskDate) {
-      return [];
-    }
-
-    return tasks.filter(
-      (task) =>
-        task.scheduledDate === nextTaskDate,
-    );
-  }, [tasks, nextTaskDate]);
-
+  /*
+   * Any old task which is neither done nor
+   * skipped needs student confirmation.
+   */
   const backlog =
     useMemo(
       () =>
@@ -246,13 +304,19 @@ export default function PlannerView({
             task.status !==
               "skipped",
         ),
-      [tasks, today],
+      [
+        tasks,
+        today,
+      ],
     );
 
   const totalMinutes =
     todayTasks.reduce(
-      (sum, task) =>
-        sum +
+      (
+        total,
+        task,
+      ) =>
+        total +
         task.estimatedMinutes,
       0,
     );
@@ -265,11 +329,20 @@ export default function PlannerView({
           "done",
       )
       .reduce(
-        (sum, task) =>
-          sum +
+        (
+          total,
+          task,
+        ) =>
+          total +
           task.estimatedMinutes,
         0,
       );
+
+  /*
+   * ============================================
+   * TASK COMPLETION
+   * ============================================
+   */
 
   async function toggle(
     task: TaskItem,
@@ -282,16 +355,24 @@ export default function PlannerView({
         ? "pending"
         : "done";
 
-    setTasks((current) =>
-      current.map((item) =>
-        item.id === task.id
-          ? {
-              ...item,
-              status: next,
-            }
-          : item,
-      ),
+    /*
+     * Optimistic UI.
+     */
+    setTasks(
+      (current) =>
+        current.map(
+          (item) =>
+            item.id ===
+            task.id
+              ? {
+                  ...item,
+                  status: next,
+                }
+              : item,
+        ),
     );
+
+    setError(null);
 
     const ok =
       await setTaskStatus(
@@ -300,18 +381,22 @@ export default function PlannerView({
       );
 
     if (!ok) {
-      setTasks((current) =>
-        current.map(
-          (item) =>
-            item.id ===
-            task.id
-              ? {
-                  ...item,
-                  status:
-                    previous,
-                }
-              : item,
-        ),
+      /*
+       * Roll back if network/DB failed.
+       */
+      setTasks(
+        (current) =>
+          current.map(
+            (item) =>
+              item.id ===
+              task.id
+                ? {
+                    ...item,
+                    status:
+                      previous,
+                  }
+                : item,
+          ),
       );
 
       setError(
@@ -319,6 +404,12 @@ export default function PlannerView({
       );
     }
   }
+
+  /*
+   * ============================================
+   * TARGET DAYS
+   * ============================================
+   */
 
   function chooseDays(
     value: number,
@@ -334,6 +425,12 @@ export default function PlannerView({
     );
   }
 
+  /*
+   * ============================================
+   * CREATE / REBUILD DAILY PLAN
+   * ============================================
+   */
+
   async function generate() {
     if (
       days < 1 ||
@@ -342,6 +439,7 @@ export default function PlannerView({
       setError(
         "Choose between 1 and 365 days.",
       );
+
       return;
     }
 
@@ -349,23 +447,29 @@ export default function PlannerView({
     setError(null);
 
     try {
-      const res = await fetch(
-        "/api/plan/generate",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type":
-              "application/json",
+      const res =
+        await fetch(
+          "/api/plan/generate",
+          {
+            method: "POST",
+
+            headers: {
+              "Content-Type":
+                "application/json",
+            },
+
+            body:
+              JSON.stringify({
+                strategy:
+                  "full_syllabus",
+
+                days,
+
+                startDate:
+                  localToday(),
+              }),
           },
-          body: JSON.stringify({
-            strategy:
-              "full_syllabus",
-            days,
-            startDate:
-              localToday(),
-          }),
-        },
-      );
+        );
 
       const data =
         await res.json();
@@ -389,9 +493,92 @@ export default function PlannerView({
           : "Could not create plan.",
       );
     } finally {
-      setGenerating(false);
+      setGenerating(
+        false,
+      );
     }
   }
+
+  /*
+   * ============================================
+   * DAILY CHECK-IN -> IMMEDIATE REPLAN
+   * ============================================
+   */
+
+  async function generateAfterCheckIn() {
+    setGenerating(true);
+    setError(null);
+
+    try {
+      /*
+       * DailyCheckIn calls this AFTER all old
+       * tasks have already been marked:
+       *
+       * Done      -> progress updated
+       * Didn't do -> skipped, progress unchanged
+       *
+       * This request therefore reads fresh DB
+       * progress and immediately creates today's
+       * new plan.
+       */
+      const res =
+        await fetch(
+          "/api/plan/generate",
+          {
+            method: "POST",
+
+            headers: {
+              "Content-Type":
+                "application/json",
+            },
+
+            body:
+              JSON.stringify({
+                strategy:
+                  "full_syllabus",
+
+                days:
+                  defaultDays,
+
+                startDate:
+                  today,
+              }),
+          },
+        );
+
+      const data =
+        await res.json();
+
+      if (!res.ok) {
+        throw new Error(
+          data.error ??
+            "Could not prepare today's plan.",
+        );
+      }
+
+      setShowGenerate(
+        false,
+      );
+
+      router.refresh();
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Could not prepare today's plan.",
+      );
+    } finally {
+      setGenerating(
+        false,
+      );
+    }
+  }
+
+  /*
+   * ============================================
+   * LOADING
+   * ============================================
+   */
 
   if (!setupChecked) {
     return (
@@ -407,39 +594,16 @@ export default function PlannerView({
     );
   }
 
+  /*
+   * ============================================
+   * PREPARATION SETUP / EDIT
+   * ============================================
+   */
+
   if (
     !setupDone ||
     editingPreparation
   ) {
-      if (backlog.length > 0) {
-    return (
-      <div className="pb-6">
-        <h1 className="text-2xl font-extrabold">
-          Planner
-        </h1>
-
-        <div className="mt-4">
-          <DailyCheckIn
-            tasks={backlog}
-            onComplete={() => {
-              setTasks((current) =>
-                current.filter(
-                  (task) =>
-                    !backlog.some(
-                      (oldTask) =>
-                        oldTask.id === task.id,
-                    ),
-                ),
-              );
-
-              setShowGenerate(true);
-              router.refresh();
-            }}
-          />
-        </div>
-      </div>
-    );
-  }
     return (
       <div className="pb-6">
         <h1 className="text-2xl font-extrabold">
@@ -465,6 +629,11 @@ export default function PlannerView({
                 false,
               );
 
+              /*
+               * Preparation changed.
+               * Ask for a rebuild so the daily plan
+               * reflects the new chapter states.
+               */
               setShowGenerate(
                 true,
               );
@@ -477,6 +646,79 @@ export default function PlannerView({
     );
   }
 
+  /*
+   * ============================================
+   * OLD TASK CHECK-IN
+   * ============================================
+   *
+   * This must happen BEFORE normal planner UI.
+   */
+
+  if (
+    backlog.length >
+    0
+  ) {
+    return (
+      <div className="pb-6">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h1 className="text-2xl font-extrabold">
+              Planner
+            </h1>
+
+            <p className="mt-1 text-sm text-[#64748B]">
+              Review unfinished work
+              before we plan today.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={() =>
+              setEditingPreparation(
+                true,
+              )
+            }
+            className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold"
+          >
+            Edit preparation
+          </button>
+        </div>
+
+        {error && (
+          <p className="mt-3 rounded-xl bg-red-50 p-3 text-sm text-red-600">
+            {error}
+          </p>
+        )}
+
+        {generating ? (
+          <div className="card mt-4 p-4 text-sm text-[#64748B]">
+            Updating progress and
+            preparing today&apos;s
+            plan…
+          </div>
+        ) : (
+          <div className="mt-4">
+            <DailyCheckIn
+              tasks={
+                backlog
+              }
+              onComplete={
+                generateAfterCheckIn
+              }
+            />
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  /*
+   * ============================================
+   * NORMAL PLANNER
+   * ============================================
+   */
+
   const remainingDays =
     plan
       ? daysLeft(
@@ -487,6 +729,8 @@ export default function PlannerView({
 
   return (
     <div className="pb-6">
+      {/* HEADER */}
+
       <div className="flex items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl font-extrabold">
@@ -522,6 +766,10 @@ export default function PlannerView({
           {error}
         </p>
       )}
+
+      {/* ============================================
+          TARGET SETUP
+         ============================================ */}
 
       {showGenerate && (
         <div className="card mt-5 p-4">
@@ -566,7 +814,9 @@ export default function PlannerView({
             type="number"
             min={1}
             max={365}
-            value={customDays}
+            value={
+              customDays
+            }
             placeholder="Custom days"
             onChange={(e) => {
               const value =
@@ -577,7 +827,9 @@ export default function PlannerView({
               );
 
               const parsed =
-                Number(value);
+                Number(
+                  value,
+                );
 
               setDays(
                 Number.isFinite(
@@ -611,138 +863,162 @@ export default function PlannerView({
             </p>
           )}
 
-          <Button
-            fullWidth
-            loading={
-              generating
-            }
-            disabled={
-              generating ||
-              days < 1
-            }
-            onClick={
-              generate
-            }
-          >
-            Create my plan
-          </Button>
+          <div className="mt-4">
+            <Button
+              fullWidth
+              loading={
+                generating
+              }
+              disabled={
+                generating ||
+                days < 1
+              }
+              onClick={
+                generate
+              }
+            >
+              Create my plan
+            </Button>
+          </div>
         </div>
       )}
+
+      {/* ============================================
+          DAILY PLAN
+         ============================================ */}
 
       {plan &&
         !showGenerate && (
           <>
-            <div className="mt-5 rounded-2xl bg-[#0F172A] p-4 text-white">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-xs text-white/60">
-                    TODAY
-                  </p>
+            {todayTasks.length >
+            0 ? (
+              <>
+                <div className="mt-5 rounded-2xl bg-[#0F172A] p-4 text-white">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-xs text-white/60">
+                        TODAY
+                      </p>
 
-                  <p className="mt-1 text-lg font-extrabold">
+                      <p className="mt-1 text-lg font-extrabold">
+                        {formatDayLabel(
+                          today,
+                          {
+                            weekday:
+                              "long",
+                          },
+                        )}
+                      </p>
+                    </div>
+
+                    <div className="text-right">
+                      <p className="text-xs text-white/60">
+                        Planned
+                      </p>
+
+                      <p className="font-bold">
+                        {formatMinutesAsHm(
+                          totalMinutes,
+                        )}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 text-sm text-white/80">
+                    {formatMinutesAsHm(
+                      completedMinutes,
+                    )}{" "}
+                    completed
+                    {todayCapacity !==
+                      null &&
+                      ` · ${formatMinutesAsHm(
+                        todayCapacity,
+                      )} usable today`}
+                  </div>
+                </div>
+
+                <div className="mt-4">
+                  <TaskList
+                    tasks={
+                      todayTasks
+                    }
+                    onToggle={
+                      toggle
+                    }
+                    emptyText="No tasks planned for today."
+                  />
+                </div>
+              </>
+            ) : nextTaskDate ? (
+              /*
+               * Today's study window is already over.
+               *
+               * Don't show:
+               *
+               * Planned 0m
+               * 0m / 0m
+               *
+               * Just show the next actionable day.
+               */
+              <div className="mt-5 rounded-2xl border border-slate-200 bg-white p-4">
+                <p className="text-xs font-bold uppercase tracking-wide text-[#64748B]">
+                  Today
+                </p>
+
+                <h2 className="mt-1 text-lg font-extrabold">
+                  Today&apos;s study
+                  window is over
+                </h2>
+
+                <p className="mt-1 text-sm text-[#64748B]">
+                  Your next plan
+                  starts{" "}
+                  <strong className="text-[#0F172A]">
                     {formatDayLabel(
-                      today,
+                      nextTaskDate,
                       {
                         weekday:
                           "long",
                       },
                     )}
-                  </p>
-                </div>
+                  </strong>
+                  .
+                </p>
 
-                <div className="text-right">
-                  <p className="text-xs text-white/60">
-                    Planned
+                <div className="mt-5">
+                  <p className="mb-2 text-xs font-bold uppercase tracking-wide text-[#64748B]">
+                    Next up
                   </p>
 
-                  <p className="font-bold">
-                    {formatMinutesAsHm(
-                      totalMinutes,
-                    )}
-                  </p>
+                  <TaskList
+                    tasks={
+                      nextDayTasks
+                    }
+                    onToggle={
+                      toggle
+                    }
+                    emptyText="No upcoming tasks."
+                  />
                 </div>
               </div>
+            ) : (
+              <div className="mt-5 rounded-2xl border border-slate-200 bg-white p-4">
+                <p className="font-bold">
+                  Nothing planned
+                  right now
+                </p>
 
-              <div className="mt-3 text-sm text-white/80">
-                {formatMinutesAsHm(
-                  completedMinutes,
-                )}{" "}
-                completed
-                {todayCapacity !==
-                  null &&
-                  ` · ${formatMinutesAsHm(
-                    todayCapacity,
-                  )} usable today`}
+                <p className="mt-1 text-sm text-[#64748B]">
+                  Rebuild your plan
+                  when you&apos;re
+                  ready to continue.
+                </p>
               </div>
-            </div>
-
-            <div className="mt-4">
-              {todayTasks.length > 0 ? (
-  <TaskList
-    tasks={todayTasks}
-    onToggle={toggle}
-    emptyText="No tasks planned for today."
-  />
-) : nextTaskDate ? (
-  <div className="rounded-2xl border border-slate-200 bg-white p-4">
-    <p className="text-sm font-bold">
-      Today&apos;s study window is over
-    </p>
-
-    <p className="mt-1 text-sm text-[#64748B]">
-      Your next plan starts{" "}
-      {formatDayLabel(nextTaskDate, {
-        weekday: "long",
-      })}
-      .
-    </p>
-
-    <div className="mt-4">
-      <p className="mb-2 text-xs font-bold uppercase tracking-wide text-[#64748B]">
-        Next up
-      </p>
-
-      <TaskList
-        tasks={nextDayTasks}
-        onToggle={toggle}
-        emptyText="No upcoming tasks."
-      />
-    </div>
-  </div>
-) : (
-  <div className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-[#64748B]">
-    Nothing is planned for today.
-  </div>
-)}
-            </div>
-
-            {backlog.length >
-              0 && (
-              <>
-                <div className="mt-6 mb-2 flex items-center justify-between">
-                  <h2 className="font-bold">
-                    Carry-over
-                  </h2>
-
-                  <span className="text-xs text-[#64748B]">
-                    {
-                      backlog.length
-                    }{" "}
-                    unfinished
-                  </span>
-                </div>
-
-                <TaskList
-                  tasks={
-                    backlog
-                  }
-                  onToggle={
-                    toggle
-                  }
-                  showDate
-                />
-              </>
             )}
+
+            {/* ============================================
+                REBUILD
+               ============================================ */}
 
             <button
               type="button"
