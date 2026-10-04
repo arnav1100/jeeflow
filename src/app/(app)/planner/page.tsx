@@ -10,6 +10,7 @@ export default async function PlannerPage() {
   const plan = await getActivePlan(user.id);
   const tasks = plan ? await getTasksForPlan(user.id, plan.id) : [];
 
+  const config = (plan?.config ?? {}) as { suggestedDays?: number | null };
   const summary: PlanSummary | null = plan
     ? {
         id: plan.id,
@@ -19,6 +20,7 @@ export default async function PlannerPage() {
         totalAvailableMinutes: plan.totalAvailableMinutes,
         totalRequiredMinutes: plan.totalRequiredMinutes,
         warnings: plan.warnings ?? [],
+        suggestedDays: typeof config.suggestedDays === "number" ? config.suggestedDays : null,
       }
     : null;
 
@@ -29,6 +31,7 @@ export default async function PlannerPage() {
       initialTasks={tasks}
       today={todayIST()}
       defaultStrategy={profile?.strategy ?? "full_syllabus"}
+      defaultDays={profile?.planDurationDays || 60}
     />
   );
 }
