@@ -7,7 +7,9 @@ import { z } from "zod";
 
 import {
   and,
+  asc,
   eq,
+  lte,
   ne,
 } from "drizzle-orm";
 
@@ -16,6 +18,7 @@ import { db } from "@/db";
 
 import {
   profiles,
+  revisionSchedule,
   studyPlans,
   studyTasks,
 } from "@/db/schema";
@@ -392,6 +395,78 @@ export async function POST(
    * ============================================
    */
 
+    /*
+   * Find the oldest due/overdue revision.
+   * Only one revision is offered to the
+   * today engine.
+   */
+  const dueRevisionRows =
+    await db
+      .select()
+      .from(revisionSchedule)
+      .where(
+        and(
+          eq(
+            revisionSchedule.userId,
+            userId,
+          ),
+          ne(
+            revisionSchedule.status,
+            "done",
+          ),
+          ne(
+            revisionSchedule.status,
+            "skipped",
+          ),
+          lte(
+            revisionSchedule.dueDate,
+            effectiveDate,
+          ),
+        ),
+      )
+      .orderBy(
+        asc(
+          revisionSchedule.dueDate,
+        ),
+      )
+      .limit(1);
+
+  const dueRevisionRow =
+    dueRevisionRows[0];
+
+  const dueRevision =
+    dueRevisionRow
+      ? (() => {
+          const chapter =
+            chaptersList.find(
+              (item) =>
+                item.chapterId ===
+                dueRevisionRow.chapterId,
+            );
+
+          if (!chapter) {
+            return null;
+          }
+
+          return {
+            chapterId:
+              chapter.chapterId,
+
+            subjectSlug:
+              chapter.subjectSlug,
+
+            title:
+              chapter.name,
+
+            revisionNumber:
+              dueRevisionRow.revisionNumber,
+
+            minutes:
+              profile.revisionMinutesPerSession,
+          };
+        })()
+      : null;
+
   const todayResult =
     generateTodayPlan({
       date:
@@ -404,6 +479,8 @@ export async function POST(
         chaptersList,
 
       missedChapterIds,
+
+      dueRevision,
     });
 
   if (
