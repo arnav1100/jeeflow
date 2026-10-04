@@ -5,10 +5,12 @@ import { format } from "date-fns";
 import type { EngineChapter, EngineTestEvent, SubjectSlug } from "@/lib/scheduling/types";
 
 export async function buildEngineChapters(userId: string): Promise<EngineChapter[]> {
-  const allSubjects = await db.select().from(subjects);
-  const allChapters = await db.select().from(chapters);
-  const allUserChapters = await db.select().from(userChapters).where(eq(userChapters.userId, userId));
-  const allPrereqs = await db.select().from(chapterPrerequisites);
+  const [allSubjects, allChapters, allUserChapters, allPrereqs] = await Promise.all([
+    db.select().from(subjects),
+    db.select().from(chapters),
+    db.select().from(userChapters).where(eq(userChapters.userId, userId)),
+    db.select().from(chapterPrerequisites),
+  ]);
 
   const subjectById = new Map(allSubjects.map((s) => [s.id, s]));
   const ucByChapter = new Map(allUserChapters.map((uc) => [uc.chapterId, uc]));
@@ -63,9 +65,10 @@ export async function buildUpcomingTests(userId: string, fromDate: string): Prom
     .from(tests)
     .where(eq(tests.userId, userId));
   return rows
-    .filter((t) => t.testDate >= fromDate)
+    .map((t) => ({ ...t, dateStr: typeof t.testDate === "string" ? t.testDate : format(t.testDate as unknown as Date, "yyyy-MM-dd") }))
+    .filter((t) => t.dateStr >= fromDate)
     .map((t) => ({
-      date: typeof t.testDate === "string" ? t.testDate : format(t.testDate as unknown as Date, "yyyy-MM-dd"),
+      date: t.dateStr,
       durationMinutes: t.durationMinutes,
       travelMinutes: t.travelMinutes,
       title: t.title,

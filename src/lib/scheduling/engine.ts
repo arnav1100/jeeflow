@@ -6,16 +6,17 @@ import type {
   GeneratePlanResult,
   GeneratedRevision,
   GeneratedTask,
+  Strategy,
   SubjectSlug,
 } from "./types";
-import { computeChapterPriority, filterChaptersByStrategy } from "./priority";
+import { computeChapterPriority, emptyPoolReason, filterChaptersByStrategy } from "./priority";
 
 const SUBJECTS: SubjectSlug[] = ["physics", "chemistry", "maths"];
 
-// Default Mon->Sat main-subject rotation from the spec. Sunday is treated as a
-// flexible catch-up day driven by whichever subject has the most backlog.
+// Mon->Sat main-subject rotation. Sunday is a flexible catch-up day driven by
+// whichever subject has the most work left.
 const MAIN_SUBJECT_BY_WEEKDAY: Record<number, SubjectSlug | null> = {
-  0: null, // Sunday
+  0: null,
   1: "physics",
   2: "chemistry",
   3: "maths",
@@ -28,6 +29,7 @@ const MAX_LECTURE_CHUNK = 120; // minutes
 const MAX_PRACTICE_CHUNK = 90;
 const MAX_PYQ_CHUNK = 150;
 const MIN_USEFUL_CHUNK = 10; // don't schedule micro fragments
+const MAX_SEARCH_DAYS = 365;
 
 interface WorkItem {
   chapter: EngineChapter;
@@ -37,71 +39,132 @@ interface WorkItem {
   remainingPyq: number;
 }
 
-function buildCompletedPrereqSet(allChapters: EngineChapter[]): Set<string> {
-  const completed = new Set<string>();
-  for (const c of allChapters) {
-    if (c.status === "completed") completed.add(c.chapterId);
-  }
-  return completed;
+interface CalendarDay {
+  date: string;
+  weekday: number;
+  capacity: number; // study minutes available after blocking tests
+  testMinutes: number;
+  testTitle?: string;
 }
 
-/** Estimates total required minutes for a chapter including a rough revision allowance. */
+function lectureMinutesFor(c: EngineChapter, strategy: Strategy): number {
+  // Revision focus never schedules fresh lectures.
+  return strategy === "revision_focus" ? 0 : c.remainingLectureMinutes;
+}
+
 function estimateChapterTotalMinutes(
   c: EngineChapter,
+  strategy: Strategy,
   revisionIntervalsCount: number,
   revisionMinutesPerSession: number,
 ): number {
   const revisionEstimate = c.revisionStatus === "done" ? 0 : revisionIntervalsCount * revisionMinutesPerSession;
-  return c.remainingLectureMinutes + c.practicePendingMinutes + c.pyqPendingMinutes + revisionEstimate;
+  return lectureMinutesFor(c, strategy) + c.practicePendingMinutes + c.pyqPendingMinutes + revisionEstimate;
+}
+
+function buildCalendar(input: GeneratePlanInput, days: number): CalendarDay[] {
+  const start = parseISO(input.startDate);
+  const out: CalendarDay[] = [];
+  for (let i = 0; i < days; i++) {
+    const date = addDays(start, i);
+    const dateStr = format(date, "yyyy-MM-dd");
+    const weekday = date.getDay();
+    const test = input.tests.find((t) => t.date === dateStr);
+    const base = input.availabilityMinutesByWeekday[weekday] ?? 0;
+    const testMinutes = test ? test.durationMinutes + test.travelMinutes : 0;
+    out.push({
+      date: dateStr,
+      weekday,
+      capacity: Math.max(0, base - testMinutes),
+      testMinutes,
+      testTitle: test?.title,
+    });
+  }
+  return out;
+}
+
+function windowDays(input: GeneratePlanInput): number {
+  return differenceInCalendarDays(parseISO(input.endDate), parseISO(input.startDate)) + 1;
 }
 
 export function checkFeasibility(input: GeneratePlanInput): FeasibilityResult {
-  const days = differenceInCalendarDays(parseISO(input.endDate), parseISO(input.startDate)) + 1;
-  let totalAvailable = 0;
-  for (let i = 0; i < days; i++) {
-    const date = addDays(parseISO(input.startDate), i);
-    const weekday = date.getDay();
-    const dateStr = format(date, "yyyy-MM-dd");
-    const test = input.tests.find((t) => t.date === dateStr);
-    let minutes = input.availabilityMinutesByWeekday[weekday] ?? 0;
-    if (test) minutes = Math.max(0, minutes - test.durationMinutes - test.travelMinutes);
-    totalAvailable += minutes;
-  }
+  const calendar = buildCalendar(input, windowDays(input));
+  const totalAvailable = calendar.reduce((s, d) => s + d.capacity, 0);
 
-  const pool = filterChaptersByStrategy(
-    input.chapters,
-    input.strategy,
-    input.selectedBuckets,
-    input.customChapterIds,
-  );
+  const pool = filterChaptersByStrategy(input.chapters, input.strategy, input.selectedBuckets, input.customChapterIds);
   const totalRequired = pool.reduce(
-    (sum, c) => sum + estimateChapterTotalMinutes(c, input.revisionIntervalsDays.length, input.revisionMinutesPerSession),
+    (sum, c) =>
+      sum + estimateChapterTotalMinutes(c, input.strategy, input.revisionIntervalsDays.length, input.revisionMinutesPerSession),
     0,
   );
+
+  // How many days would the whole selection need? Walk forward day by day.
+  let suggestedDays: number | null = null;
+  if (totalRequired === 0) {
+    suggestedDays = 1;
+  } else {
+    const long = buildCalendar(input, MAX_SEARCH_DAYS);
+    let acc = 0;
+    for (let i = 0; i < long.length; i++) {
+      acc += long[i].capacity;
+      if (acc >= totalRequired) {
+        // small buffer so the last chapters' spaced revisions can still land
+        const maxInterval = input.revisionIntervalsDays.length ? Math.max(...input.revisionIntervalsDays) : 0;
+        suggestedDays = Math.min(MAX_SEARCH_DAYS, i + 1 + Math.min(maxInterval, 7));
+        break;
+      }
+    }
+  }
 
   return {
     totalAvailableMinutes: totalAvailable,
     totalRequiredMinutes: totalRequired,
     feasible: totalRequired <= totalAvailable * 1.05,
     shortfallMinutes: Math.max(0, totalRequired - totalAvailable),
+    suggestedDays,
   };
 }
 
+/** Orders a subject queue by score, but never before the chapter's own prerequisites (when they're in the same queue). */
+function orderWithPrerequisites(items: WorkItem[]): WorkItem[] {
+  const byId = new Map(items.map((i) => [i.chapter.chapterId, i]));
+  const placed = new Set<string>();
+  const visiting = new Set<string>();
+  const result: WorkItem[] = [];
+
+  function place(item: WorkItem) {
+    const id = item.chapter.chapterId;
+    if (placed.has(id) || visiting.has(id)) return;
+    visiting.add(id);
+    // Student said they already know the prerequisites -> don't force them first.
+    if (item.chapter.prerequisiteChoice !== "already_know") {
+      const prereqs = item.chapter.prerequisiteIds
+        .map((pid) => byId.get(pid))
+        .filter((p): p is WorkItem => Boolean(p))
+        .sort((a, b) => b.score - a.score);
+      for (const p of prereqs) place(p);
+    }
+    visiting.delete(id);
+    placed.add(id);
+    result.push(item);
+  }
+
+  for (const item of items) place(item);
+  return result;
+}
+
 /**
- * Core deterministic scheduling engine.
+ * Deterministic scheduling engine.
  *
- * High level approach (two passes):
- *  PASS 1 — Walk the plan day by day. Each day's available minutes are split
- *    across a rotating "main / second / third" subject so Physics, Chemistry
- *    and Maths always progress in parallel (never ignoring a subject for
- *    multiple days). Within a subject, chapters are consumed strictly in
- *    priority order and only one chapter is "active" at a time — we fully
- *    allocate its remaining Lecture -> Practice/DPP -> PYQ minutes (chunked
- *    into realistic session lengths) before opening the next chapter.
- *  PASS 2 — Once a chapter's lecture+practice+pyq minutes are fully
- *    allocated we know its "study ready" date, so we project forward spaced
- *    revision sessions (default +3 / +7 / +15 days) and schedule them as
- *    lightweight tasks, provided they land inside the plan window.
+ *  1. Pool        — strategy decides which chapters are in. Empty pool => emptyReason (nothing is overwritten).
+ *  2. Fit         — if the pool needs more time than the window offers, keep the highest priority chapters.
+ *  3. Study pass  — day by day, split study time across Physics / Chemistry / Maths (50/30/20 rotating).
+ *                   Per subject, chapters go in priority order but never before their prerequisites, one
+ *                   active chapter at a time: Lecture -> Practice/DPP -> PYQ.
+ *                   A slice of every day (20%, 50% for revision focus) is reserved for revision.
+ *  4. Revision    — spaced revisions (default +3/+7/+15 days after the chapter is study-ready) are placed on the
+ *                   first day on/after the due date that still has free time, so they never overload a day or
+ *                   land on a day off.
  */
 export function generateStudyPlan(input: GeneratePlanInput): GeneratePlanResult {
   const feasibility = checkFeasibility(input);
@@ -110,6 +173,31 @@ export function generateStudyPlan(input: GeneratePlanInput): GeneratePlanResult 
 
   let pool = filterChaptersByStrategy(input.chapters, input.strategy, input.selectedBuckets, input.customChapterIds);
 
+  if (pool.length === 0) {
+    return {
+      feasibility,
+      warnings,
+      tasks: [],
+      revisions: [],
+      trimmedChapterIds,
+      emptyReason: emptyPoolReason(input.strategy),
+      scheduledMinutes: 0,
+      revisionsDropped: 0,
+    };
+  }
+
+  const nDays = windowDays(input);
+  const calendar = buildCalendar(input, nDays);
+  const totalDays = nDays - 1;
+  const completedPrereqs = new Set(input.chapters.filter((c) => c.status === "completed").map((c) => c.chapterId));
+  const priorityCtx = {
+    strategy: input.strategy,
+    daysRemaining: totalDays,
+    upcomingTestSyllabusChapterIds: input.upcomingTestSyllabusChapterIds ?? new Set<string>(),
+    completedPrerequisiteIds: completedPrereqs,
+    today: input.startDate,
+  };
+
   if (!feasibility.feasible) {
     const neededH = Math.round(feasibility.totalRequiredMinutes / 60);
     const availH = Math.round(feasibility.totalAvailableMinutes / 60);
@@ -117,26 +205,19 @@ export function generateStudyPlan(input: GeneratePlanInput): GeneratePlanResult 
       `Your selected workload needs approximately ${neededH}h, but your schedule currently provides around ${availH}h in this window.`,
     );
 
-    // Best-effort trim: keep the highest priority chapters that fit inside the
-    // available time instead of silently generating an impossible schedule.
-    const completedPrereqs = buildCompletedPrereqSet(input.chapters);
     const scored = pool
-      .map((c) => ({
-        chapter: c,
-        score: computeChapterPriority(c, {
-          strategy: input.strategy,
-          daysRemaining: differenceInCalendarDays(parseISO(input.endDate), parseISO(input.startDate)),
-          upcomingTestSyllabusChapterIds: input.upcomingTestSyllabusChapterIds ?? new Set(),
-          completedPrerequisiteIds: completedPrereqs,
-          today: input.startDate,
-        }),
-      }))
+      .map((c) => ({ chapter: c, score: computeChapterPriority(c, priorityCtx) }))
       .sort((a, b) => b.score - a.score);
 
     let budget = feasibility.totalAvailableMinutes;
     const kept: EngineChapter[] = [];
     for (const { chapter } of scored) {
-      const cost = estimateChapterTotalMinutes(chapter, input.revisionIntervalsDays.length, input.revisionMinutesPerSession);
+      const cost = estimateChapterTotalMinutes(
+        chapter,
+        input.strategy,
+        input.revisionIntervalsDays.length,
+        input.revisionMinutesPerSession,
+      );
       if (cost <= budget || kept.length === 0) {
         kept.push(chapter);
         budget -= cost;
@@ -145,36 +226,41 @@ export function generateStudyPlan(input: GeneratePlanInput): GeneratePlanResult 
       }
     }
     pool = kept;
+
+    if (trimmedChapterIds.length > 0) {
+      const extra = feasibility.suggestedDays ? ` Choose about ${feasibility.suggestedDays} days to fit everything.` : "";
+      warnings.push(
+        `${trimmedChapterIds.length} lower-priority chapter${trimmedChapterIds.length > 1 ? "s" : ""} did not fit and were left out.${extra}`,
+      );
+    }
   }
 
-  // ---------- Build per-subject priority queues ----------
-  const completedPrereqs = buildCompletedPrereqSet(input.chapters);
-  const totalDays = differenceInCalendarDays(parseISO(input.endDate), parseISO(input.startDate));
-
+  // ---------- Per-subject queues ----------
   const queues: Record<SubjectSlug, WorkItem[]> = { physics: [], chemistry: [], maths: [] };
   for (const c of pool) {
-    const score = computeChapterPriority(c, {
-      strategy: input.strategy,
-      daysRemaining: totalDays,
-      upcomingTestSyllabusChapterIds: input.upcomingTestSyllabusChapterIds ?? new Set(),
-      completedPrerequisiteIds: completedPrereqs,
-      today: input.startDate,
-    });
     queues[c.subjectSlug].push({
       chapter: c,
-      score,
-      remainingLecture: c.remainingLectureMinutes,
+      score: computeChapterPriority(c, priorityCtx),
+      remainingLecture: lectureMinutesFor(c, input.strategy),
       remainingPractice: c.practicePendingMinutes,
       remainingPyq: c.pyqPendingMinutes,
     });
   }
-  for (const s of SUBJECTS) queues[s].sort((a, b) => b.score - a.score);
+  for (const s of SUBJECTS) {
+    queues[s].sort((a, b) => b.score - a.score);
+    queues[s] = orderWithPrerequisites(queues[s]);
+  }
   const pointers: Record<SubjectSlug, number> = { physics: 0, chemistry: 0, maths: 0 };
 
   const tasks: GeneratedTask[] = [];
-  const studyReadyDates: Record<string, string> = {}; // chapterId -> date
+  const used: Record<string, number> = {}; // date -> minutes already planned
+  const lastTaskDate: Record<string, string> = {}; // chapterId -> last study task date
 
   const subjectHasWork = (s: SubjectSlug) => pointers[s] < queues[s].length;
+  const remainingWork = (s: SubjectSlug) => {
+    const item = queues[s][pointers[s]];
+    return item ? item.remainingLecture + item.remainingPractice + item.remainingPyq : 0;
+  };
 
   function allocateToSubject(subject: SubjectSlug, minutesIn: number, dateStr: string): number {
     let alloc = minutesIn;
@@ -199,14 +285,15 @@ export function generateStudyPlan(input: GeneratePlanInput): GeneratePlanResult 
       }
 
       if (!taskType) {
-        // Chapter fully scheduled — mark study-ready and advance to next chapter.
-        studyReadyDates[item.chapter.chapterId] = dateStr;
-        pointers[subject] += 1;
+        pointers[subject] += 1; // chapter fully scheduled
         continue;
       }
 
-      const chunk = Math.min(alloc, remainingRef, maxChunk);
-      if (chunk < MIN_USEFUL_CHUNK) break;
+      // Avoid leaving a tiny tail: if what's left after this chunk would be
+      // under the minimum, take it all now when it fits.
+      let chunk = Math.min(alloc, remainingRef, maxChunk);
+      if (remainingRef - chunk > 0 && remainingRef - chunk < MIN_USEFUL_CHUNK && remainingRef <= alloc) chunk = remainingRef;
+      if (chunk < MIN_USEFUL_CHUNK && chunk < remainingRef) break;
 
       tasks.push({
         chapterId: item.chapter.chapterId,
@@ -217,51 +304,42 @@ export function generateStudyPlan(input: GeneratePlanInput): GeneratePlanResult 
         scheduledDate: dateStr,
         priority: item.score,
       });
+      used[dateStr] = (used[dateStr] ?? 0) + chunk;
+      lastTaskDate[item.chapter.chapterId] = dateStr;
 
       alloc -= chunk;
       if (taskType === "lecture") item.remainingLecture -= chunk;
       if (taskType === "practice") item.remainingPractice -= chunk;
       if (taskType === "pyq") item.remainingPyq -= chunk;
     }
-    return alloc; // leftover, unused minutes
+    return alloc;
   }
 
-  // ---------- PASS 1: walk the calendar ----------
-  const dayCount = totalDays + 1;
-  for (let i = 0; i < dayCount; i++) {
-    const date = addDays(parseISO(input.startDate), i);
-    const weekday = date.getDay();
-    const dateStr = format(date, "yyyy-MM-dd");
+  // ---------- PASS 1: study ----------
+  const hasRevision = input.revisionIntervalsDays.length > 0;
+  const reserveRatio = !hasRevision ? 0 : input.strategy === "revision_focus" ? 0.5 : 0.2;
 
-    const test = input.tests.find((t) => t.date === dateStr);
-    let dayMinutes = input.availabilityMinutesByWeekday[weekday] ?? 0;
-
-    if (test) {
-      const blocked = test.durationMinutes + test.travelMinutes;
-      dayMinutes = Math.max(0, dayMinutes - blocked);
+  for (const day of calendar) {
+    if (day.testMinutes > 0 && day.testTitle) {
       tasks.push({
         chapterId: null,
         subjectSlug: "general",
         taskType: "test",
-        title: test.title,
-        estimatedMinutes: blocked,
-        scheduledDate: dateStr,
+        title: day.testTitle,
+        estimatedMinutes: day.testMinutes,
+        scheduledDate: day.date,
         priority: 100,
       });
     }
 
-    if (dayMinutes < MIN_USEFUL_CHUNK) continue;
+    const studyBudget = Math.floor(day.capacity * (1 - reserveRatio));
+    if (studyBudget < MIN_USEFUL_CHUNK) continue;
+    if (!SUBJECTS.some(subjectHasWork)) continue;
 
-    // Decide today's main / second / third subject ordering.
-    let mainSubject = MAIN_SUBJECT_BY_WEEKDAY[weekday];
-    const remainingWork = (s: SubjectSlug) => {
-      const item = queues[s][pointers[s]];
-      if (!item) return 0;
-      return item.remainingLecture + item.remainingPractice + item.remainingPyq;
-    };
-    const bySubjectBacklog = [...SUBJECTS].sort((a, b) => remainingWork(b) - remainingWork(a));
+    let mainSubject = MAIN_SUBJECT_BY_WEEKDAY[day.weekday];
+    const byBacklog = [...SUBJECTS].sort((a, b) => remainingWork(b) - remainingWork(a));
     if (!mainSubject || !subjectHasWork(mainSubject)) {
-      mainSubject = bySubjectBacklog.find((s) => subjectHasWork(s)) ?? bySubjectBacklog[0];
+      mainSubject = byBacklog.find((s) => subjectHasWork(s)) ?? byBacklog[0];
     }
     const others = SUBJECTS.filter((s) => s !== mainSubject).sort((a, b) => remainingWork(b) - remainingWork(a));
     const order = [mainSubject, ...others];
@@ -270,48 +348,94 @@ export function generateStudyPlan(input: GeneratePlanInput): GeneratePlanResult 
     let carry = 0;
     for (let idx = 0; idx < order.length; idx++) {
       const subject = order[idx];
-      const share = Math.round(dayMinutes * ratios[idx]) + carry;
+      const share = Math.round(studyBudget * ratios[idx]) + carry;
       carry = 0;
       if (!subjectHasWork(subject)) {
-        carry = share; // give unused share to the next subject in line
+        carry = share;
         continue;
       }
-      const leftover = allocateToSubject(subject, share, dateStr);
-      carry = leftover;
+      carry = allocateToSubject(subject, share, day.date);
     }
-    // Final pass: if minutes still remain (e.g. two subjects finished), push
-    // whatever's left into any subject that still has pending work.
     if (carry >= MIN_USEFUL_CHUNK) {
       for (const subject of order) {
         if (!subjectHasWork(subject)) continue;
-        carry = allocateToSubject(subject, carry, dateStr);
+        carry = allocateToSubject(subject, carry, day.date);
         if (carry < MIN_USEFUL_CHUNK) break;
       }
     }
   }
 
-  // ---------- PASS 2: project spaced revisions off study-ready dates ----------
+  // ---------- PASS 2: spaced revision ----------
   const revisions: GeneratedRevision[] = [];
-  for (const [chapterId, readyDateStr] of Object.entries(studyReadyDates)) {
+  let revisionsDropped = 0;
+  const capacityByDate = new Map(calendar.map((d) => [d.date, d.capacity]));
+  const sessionMin = input.revisionMinutesPerSession;
+
+  type Pending = { chapter: EngineChapter; n: number; interval: number; due: string };
+  const pending: Pending[] = [];
+  const scheduledChapterIds = new Set<string>();
+  for (const s of SUBJECTS) for (const item of queues[s]) scheduledChapterIds.add(item.chapter.chapterId);
+
+  for (const chapterId of scheduledChapterIds) {
     const chapter = pool.find((c) => c.chapterId === chapterId);
     if (!chapter || chapter.revisionStatus === "done") continue;
+    // Study-ready date = last study task, or the start date for chapters that were already studied.
+    const ready = lastTaskDate[chapterId] ?? input.startDate;
     input.revisionIntervalsDays.forEach((intervalDays, idx) => {
-      const dueDate = format(addDays(parseISO(readyDateStr), intervalDays), "yyyy-MM-dd");
-      revisions.push({ chapterId, revisionNumber: idx + 1, intervalDays, dueDate });
-      if (dueDate <= input.endDate) {
-        tasks.push({
-          chapterId,
-          subjectSlug: chapter.subjectSlug,
-          taskType: "revision",
-          title: chapter.name,
-          estimatedMinutes: input.revisionMinutesPerSession,
-          scheduledDate: dueDate,
-          priority: 60,
-          revisionNumber: idx + 1,
-        });
+      const interval = Math.max(1, intervalDays);
+      pending.push({
+        chapter,
+        n: idx + 1,
+        interval,
+        due: format(addDays(parseISO(ready), interval), "yyyy-MM-dd"),
+      });
+    });
+  }
+  // Earlier due dates first; for ties, higher priority chapters first.
+  pending.sort((a, b) => (a.due === b.due ? a.n - b.n : a.due < b.due ? -1 : 1));
+
+  for (const r of pending) {
+    let placed: string | null = null;
+    if (r.due <= input.endDate) {
+      const startIdx = Math.max(0, differenceInCalendarDays(parseISO(r.due), parseISO(input.startDate)));
+      for (let i = startIdx; i < calendar.length; i++) {
+        const d = calendar[i].date;
+        const free = (capacityByDate.get(d) ?? 0) - (used[d] ?? 0);
+        if (free >= sessionMin) {
+          placed = d;
+          break;
+        }
       }
+    }
+    if (placed) {
+      tasks.push({
+        chapterId: r.chapter.chapterId,
+        subjectSlug: r.chapter.subjectSlug,
+        taskType: "revision",
+        title: r.chapter.name,
+        estimatedMinutes: sessionMin,
+        scheduledDate: placed,
+        priority: 60,
+        revisionNumber: r.n,
+      });
+      used[placed] = (used[placed] ?? 0) + sessionMin;
+    } else if (r.due <= input.endDate) {
+      revisionsDropped += 1;
+    }
+    revisions.push({
+      chapterId: r.chapter.chapterId,
+      revisionNumber: r.n,
+      intervalDays: r.interval,
+      dueDate: placed ?? r.due,
     });
   }
 
-  return { feasibility, warnings, tasks, revisions, trimmedChapterIds };
+  if (revisionsDropped > 0) {
+    warnings.push(
+      `${revisionsDropped} revision session${revisionsDropped > 1 ? "s" : ""} could not fit in your free time. A longer plan gives them room.`,
+    );
+  }
+
+  const scheduledMinutes = tasks.filter((t) => t.taskType !== "test").reduce((s, t) => s + t.estimatedMinutes, 0);
+  return { feasibility, warnings, tasks, revisions, trimmedChapterIds, emptyReason: null, scheduledMinutes, revisionsDropped };
 }

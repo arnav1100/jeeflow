@@ -89,6 +89,8 @@ export interface FeasibilityResult {
   totalRequiredMinutes: number;
   feasible: boolean;
   shortfallMinutes: number;
+  /** Approximate number of days (from startDate) needed to fit the whole selection. null = availability is zero. */
+  suggestedDays: number | null;
 }
 
 export interface GeneratePlanResult {
@@ -97,4 +99,9 @@ export interface GeneratePlanResult {
   tasks: GeneratedTask[];
   revisions: GeneratedRevision[];
   trimmedChapterIds: string[]; // chapters excluded to keep the plan realistic
+  /** Set when the selected strategy produced nothing to schedule. The caller should NOT overwrite the existing plan. */
+  emptyReason: string | null;
+  scheduledMinutes: number;
+  /** Revision sessions that could not be placed inside the window. */
+  revisionsDropped: number;
 }

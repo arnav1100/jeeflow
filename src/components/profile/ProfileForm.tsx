@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
+import TimeInput from "@/components/ui/TimeInput";
 
 export interface ProfileData {
   email: string;
@@ -228,19 +229,9 @@ export default function ProfileForm({ initial }: { initial: ProfileData }) {
                 <div className="mt-2 space-y-2">
                   {day.windows.map((w, i) => (
                     <div key={i} className="flex items-center gap-2">
-                      <input
-                        type="time"
-                        value={w.start}
-                        onChange={(e) => updateWindows(dow, (ws) => ws.map((x, j) => (j === i ? { ...x, start: e.target.value } : x)))}
-                        className="min-w-0 flex-1 rounded-lg border border-slate-200 px-2.5 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#38BDF8]"
-                      />
+                      <TimeInput value={w.start} onChange={(v) => updateWindows(dow, (ws) => ws.map((x, j) => (j === i ? { ...x, start: v } : x)))} />
                       <span className="text-xs text-[#64748B]">to</span>
-                      <input
-                        type="time"
-                        value={w.end}
-                        onChange={(e) => updateWindows(dow, (ws) => ws.map((x, j) => (j === i ? { ...x, end: e.target.value } : x)))}
-                        className="min-w-0 flex-1 rounded-lg border border-slate-200 px-2.5 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#38BDF8]"
-                      />
+                      <TimeInput value={w.end} onChange={(v) => updateWindows(dow, (ws) => ws.map((x, j) => (j === i ? { ...x, end: v } : x)))} />
                       <button
                         type="button"
                         aria-label="Remove window"

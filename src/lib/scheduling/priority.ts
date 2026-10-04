@@ -88,7 +88,12 @@ export function computeChapterPriority(chapter: EngineChapter, ctx: PriorityCont
   return Math.round(score);
 }
 
-/** Filters the chapter pool according to the chosen study strategy. */
+/**
+ * Filters the chapter pool according to the chosen study strategy.
+ *
+ * backlog_completion : anything the student already started (lecture partly/fully done, PYQ or revision pending).
+ * revision_focus     : chapters whose lectures are finished — the remaining work is practice, PYQs and revision.
+ */
 export function filterChaptersByStrategy(
   chapters: EngineChapter[],
   strategy: Strategy,
@@ -113,13 +118,26 @@ export function filterChaptersByStrategy(
       }
       return notCompleted;
     case "revision_focus":
-      // Keep only chapters that still need fresh study time minimally; revision
-      // tasks themselves are generated separately from revision_schedule.
-      return notCompleted.filter((c) => c.status === "in_progress" || c.status === "pyq_pending");
+      return notCompleted.filter((c) => ["lecture_done", "pyq_pending", "revision_pending"].includes(c.status));
     case "high_weightage_first":
-      return notCompleted;
     case "full_syllabus":
     default:
       return notCompleted;
+  }
+}
+
+/** Human readable reason shown when a strategy leaves nothing to schedule. */
+export function emptyPoolReason(strategy: Strategy): string {
+  switch (strategy) {
+    case "backlog_completion":
+      return "No started chapters found, so there is no backlog to complete. Mark your lecture progress in the Syllabus tab, or choose Full syllabus.";
+    case "revision_focus":
+      return "No chapter has a finished lecture yet, so there is nothing to revise. Mark finished lectures in the Syllabus tab, or choose Full syllabus.";
+    case "custom_chapters":
+      return "No chapters selected. Pick at least one chapter.";
+    case "bucket_strategy":
+      return "No pending chapters in the buckets you selected. Pick another bucket.";
+    default:
+      return "Every chapter in this selection is already completed.";
   }
 }

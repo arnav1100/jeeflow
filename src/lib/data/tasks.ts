@@ -22,7 +22,20 @@ export async function getTasksForPlan(userId: string, planId: string): Promise<T
     .from(studyTasks)
     .leftJoin(chapters, eq(studyTasks.chapterId, chapters.id))
     .where(and(eq(studyTasks.userId, userId), eq(studyTasks.planId, planId)))
-    .orderBy(asc(studyTasks.scheduledDate), desc(studyTasks.priority));
+    .orderBy(asc(studyTasks.scheduledDate));
+
+  const TYPE_RANK: Record<string, number> = { test: 0, lecture: 1, practice: 2, pyq: 3, revision: 4 };
+  // Keep a chapter's tasks together and in study order: lecture -> practice -> PYQ -> revision.
+  rows.sort((a, b) => {
+    const da = String(a.task.scheduledDate);
+    const db_ = String(b.task.scheduledDate);
+    if (da !== db_) return da < db_ ? -1 : 1;
+    if (a.task.priority !== b.task.priority) return b.task.priority - a.task.priority;
+    const ca = a.chapterName ?? a.task.title;
+    const cb = b.chapterName ?? b.task.title;
+    if (ca !== cb) return ca < cb ? -1 : 1;
+    return (TYPE_RANK[a.task.taskType] ?? 9) - (TYPE_RANK[b.task.taskType] ?? 9);
+  });
 
   return rows.map(({ task, chapterName }) => ({
     id: task.id,

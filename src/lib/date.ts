@@ -26,3 +26,27 @@ export function formatDayLabel(ymd: string, opts?: { weekday?: "short" | "long" 
     month: "short",
   }).format(parseYmd(ymd));
 }
+
+export function toYmd(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+export function addDaysYmd(ymd: string, n: number): string {
+  const d = parseYmd(ymd);
+  d.setUTCDate(d.getUTCDate() + n);
+  return toYmd(d);
+}
+
+/** 0 = Sunday ... 6 = Saturday */
+export function weekdayOf(ymd: string): number {
+  return parseYmd(ymd).getUTCDay();
+}
+
+/** Monday of the week containing `ymd`. */
+export function startOfWeekYmd(ymd: string): string {
+  return addDaysYmd(ymd, -((weekdayOf(ymd) + 6) % 7));
+}
+
+export function formatMonthYear(ymd: string): string {
+  return new Intl.DateTimeFormat("en-IN", { timeZone: "UTC", month: "long", year: "numeric" }).format(parseYmd(ymd));
+}
