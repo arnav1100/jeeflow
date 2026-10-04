@@ -6,7 +6,7 @@ import { formatDayLabel } from "@/lib/date";
 import { TASK_TYPE_LABEL, type TaskItem } from "./types";
 
 /** Calls the API and returns true on success. */
-export async function setTaskStatus(taskId: string, status: "done" | "pending"): Promise<boolean> {
+export async function setTaskStatus(taskId: string, status: "pending" | "done" | "skipped"): Promise<boolean> {
   try {
     const res = await fetch(`/api/tasks/${taskId}`, {
       method: "PATCH",
