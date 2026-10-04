@@ -240,28 +240,52 @@ export async function POST(
     ] = todayCapacity;
   }
 
+    /*
+   * If today's study window is already over,
+   * move the actionable plan to the next day
+   * that has study availability.
+   */
+  let effectiveStartDate =
+    startDate;
+
   if (
-    todayCapacity < 10 &&
-    startDate ===
-      todayIST()
+    startDate === todayIST() &&
+    todayCapacity < 10
   ) {
-    return NextResponse.json(
-      {
-        error:
-          "There is almost no study time left in today's availability. Update today's availability or start with the next study day.",
-      },
-      { status: 422 },
-    );
+    for (let offset = 1; offset <= 7; offset++) {
+      const candidateDate =
+        addDaysYmd(
+          startDate,
+          offset,
+        );
+
+      const candidate =
+        new Date(
+          `${candidateDate}T12:00:00Z`,
+        );
+
+      const weekday =
+        candidate.getUTCDay();
+
+      if (
+        (availabilityMap[weekday] ?? 0) >=
+        10
+      ) {
+        effectiveStartDate =
+          candidateDate;
+        break;
+      }
+    }
   }
 
   const result =
     generateStudyPlan({
       userId,
 
-      startDate,
+      startDate: effectiveStartDate,
       endDate,
 
-      scheduleEndDate,
+      scheduleEndDate: effectiveStartDate,
 
       strategy:
         "full_syllabus",
