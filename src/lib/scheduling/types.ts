@@ -54,6 +54,14 @@ export interface EngineChapter {
   startedAt: string | null;
 }
 
+export interface EngineExistingRevision {
+  chapterId: string;
+  revisionNumber: number;
+  intervalDays: number;
+  dueDate: string;
+  status: "pending" | "scheduled" | "done" | "skipped";
+}
+
 export interface EngineTestEvent {
   date: string;
   durationMinutes: number;
@@ -76,6 +84,8 @@ export interface GeneratePlanInput {
 
   revisionIntervalsDays: number[];
   revisionMinutesPerSession: number;
+
+  existingRevisions?: EngineExistingRevision[];
 
   upcomingTestSyllabusChapterIds?: Set<string>;
 }
