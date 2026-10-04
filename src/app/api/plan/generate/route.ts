@@ -3,7 +3,12 @@ import { z } from "zod";
 import { and, eq, ne } from "drizzle-orm";
 import { getSession } from "@/lib/auth";
 import { db } from "@/db";
-import { studyPlans, studyTasks, revisionSchedule, profiles } from "@/db/schema";
+import {
+  studyPlans,
+  studyTasks,
+  revisionSchedule,
+  profiles,
+} from "@/db/schema";
 import { generateStudyPlan } from "@/lib/scheduling/engine";
 import {
   buildAvailabilityMap,
@@ -164,19 +169,55 @@ export async function POST(req: NextRequest) {
       })),
     );
 
-    await tx.delete(revisionSchedule).where(eq(revisionSchedule.userId, userId));
-    if (result.revisions.length > 0) {
-      await tx.insert(revisionSchedule).values(
-        result.revisions.map((r) => ({
-          userId,
-          chapterId: r.chapterId,
-          revisionNumber: r.revisionNumber,
-          intervalDays: r.intervalDays,
-          dueDate: r.dueDate,
-          status: "scheduled" as const,
-        })),
-      );
-    }
+    // Preserve completed revision history.
+// Only unfinished revision rows are rebuilt for the new plan.
+await tx
+  .delete(revisionSchedule)
+  .where(
+    and(
+      eq(revisionSchedule.userId, userId),
+      ne(revisionSchedule.status, "done"),
+    ),
+  );
+
+const completedRevisionKeys = new Set(
+  existingRevisions
+    .filter((r) => r.status === "done")
+    .map(
+      (r) =>
+        `${r.chapterId}:${r.revisionNumber}`,
+    ),
+);
+
+const revisionsToInsert =
+  result.revisions.filter(
+    (r) =>
+      !completedRevisionKeys.has(
+        `${r.chapterId}:${r.revisionNumber}`,
+      ),
+  );
+
+if (revisionsToInsert.length > 0) {
+  await tx
+    .insert(revisionSchedule)
+    .values(
+      revisionsToInsert.map((r) => ({
+        userId,
+        chapterId: r.chapterId,
+        revisionNumber:
+          r.revisionNumber,
+        intervalDays:
+          r.intervalDays,
+        dueDate: r.dueDate,
+        status:
+          r.status === "done"
+            ? ("done" as const)
+            : r.status === "skipped"
+              ? ("skipped" as const)
+              : ("scheduled" as const),
+      })),
+    );
+}
 
     if (input.days) {
       await tx.update(profiles).set({ planDurationDays: input.days, updatedAt: new Date() }).where(eq(profiles.userId, userId));
