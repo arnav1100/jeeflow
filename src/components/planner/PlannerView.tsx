@@ -595,9 +595,14 @@ export default function PlannerView({
    * Future chapter durations are not asked.
    */
   async function saveCurrentDurations() {
-    setSavingDurations(true);
-    setError(null);
+  setSavingDurations(true);
+  setError(null);
 
+  if (currentChapters.length === 0) {
+    setSavingDurations(false);
+    return true;
+  }
+    
     try {
       for (const chapter of currentChapters) {
         const raw =
@@ -805,14 +810,7 @@ export default function PlannerView({
       ) + 1
     : 0;
 
-  const durationsValid =
-    currentChapters.every(
-      (chapter) => {
-        const value = Number(
-          durationHours[
-            chapter.chapterId
-          ],
-        );
+  
 
         return (
           Number.isFinite(value) &&
@@ -826,18 +824,14 @@ export default function PlannerView({
     );
 
   const canGenerate =
-    !generating &&
-    !savingDurations &&
-    !chaptersLoading &&
-    durationsValid &&
-    days >= 1 &&
-    days <= 365 &&
-    !(
-      strategy ===
-        "bucket_strategy" &&
-      buckets.length === 0
-    ) &&
-    !preview?.emptyReason;
+  !generating &&
+  !savingDurations &&
+  days >= 1 &&
+  days <= 365 &&
+  !(
+    strategy === "bucket_strategy" &&
+    buckets.length === 0
+  );
 
   return (
     <div className="pb-6">
