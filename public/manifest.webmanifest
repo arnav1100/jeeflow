@@ -1,0 +1,15 @@
+{
+  "name": "JEEFlow — Plan Smart. Study Consistently.",
+  "short_name": "JEEFlow",
+  "description": "A personalized, adaptive JEE Main study planner for Physics, Chemistry and Mathematics.",
+  "start_url": "/dashboard",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#F7FBFF",
+  "theme_color": "#38BDF8",
+  "orientation": "portrait",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
