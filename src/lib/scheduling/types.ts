@@ -73,6 +73,13 @@ export interface GeneratePlanInput {
   userId: string;
   startDate: string;
   endDate: string;
+
+  /**
+ * Last date for which exact daily tasks should be generated.
+ * endDate remains the student's long-term target window.
+ */
+scheduleEndDate?: string;
+  
   strategy: Strategy;
 
   selectedBuckets?: number[];
