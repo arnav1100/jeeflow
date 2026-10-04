@@ -1269,19 +1269,12 @@ export function generateStudyPlan(
     }
 
     revisions.push({
-      chapterId:
-        r.chapter
-          .chapterId,
-
-      revisionNumber:
-        r.n,
-
-      intervalDays:
-        r.interval,
-
-      dueDate:
-        placed ?? r.due,
-    });
+  chapterId: r.chapter.chapterId,
+  revisionNumber: r.n,
+  intervalDays: r.interval,
+  dueDate: placed ?? r.due,
+  status: placed ? "scheduled" : "pending",
+});
   }
 
   if (
