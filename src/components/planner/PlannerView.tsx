@@ -10,6 +10,7 @@ import {
 } from "next/navigation";
 
 import PlanSetup from "@/components/planner/PlanSetup";
+import DailyCheckIn from "@/components/planner/DailyCheckIn";
 import Button from "@/components/ui/Button";
 import TaskList, {
   setTaskStatus,
@@ -410,6 +411,35 @@ export default function PlannerView({
     !setupDone ||
     editingPreparation
   ) {
+      if (backlog.length > 0) {
+    return (
+      <div className="pb-6">
+        <h1 className="text-2xl font-extrabold">
+          Planner
+        </h1>
+
+        <div className="mt-4">
+          <DailyCheckIn
+            tasks={backlog}
+            onComplete={() => {
+              setTasks((current) =>
+                current.filter(
+                  (task) =>
+                    !backlog.some(
+                      (oldTask) =>
+                        oldTask.id === task.id,
+                    ),
+                ),
+              );
+
+              setShowGenerate(true);
+              router.refresh();
+            }}
+          />
+        </div>
+      </div>
+    );
+  }
     return (
       <div className="pb-6">
         <h1 className="text-2xl font-extrabold">
