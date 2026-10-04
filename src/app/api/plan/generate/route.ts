@@ -5,7 +5,12 @@ import { getSession } from "@/lib/auth";
 import { db } from "@/db";
 import { studyPlans, studyTasks, revisionSchedule, profiles } from "@/db/schema";
 import { generateStudyPlan } from "@/lib/scheduling/engine";
-import { buildAvailabilityMap, buildEngineChapters, buildUpcomingTests } from "@/lib/data/plan-context";
+import {
+  buildAvailabilityMap,
+  buildEngineChapters,
+  buildUpcomingTests,
+  buildExistingRevisions,
+} from "@/lib/data/plan-context";
 import { addDaysYmd, daysBetween, todayIST } from "@/lib/date";
 import type { Strategy } from "@/lib/scheduling/types";
 
@@ -56,11 +61,17 @@ export async function POST(req: NextRequest) {
   if (endDate < startDate) return NextResponse.json({ error: "End date must be after the start date." }, { status: 400 });
   const totalDays = daysBetween(startDate, endDate) + 1;
 
-  const [chaptersList, availabilityMap, upcomingTests] = await Promise.all([
-    buildEngineChapters(userId),
-    buildAvailabilityMap(userId),
-    buildUpcomingTests(userId, startDate),
-  ]);
+  const [
+  chaptersList,
+  availabilityMap,
+  upcomingTests,
+  existingRevisions,
+] = await Promise.all([
+  buildEngineChapters(userId),
+  buildAvailabilityMap(userId),
+  buildUpcomingTests(userId, startDate),
+  buildExistingRevisions(userId),
+]);
 
   const weeklyMinutes = Object.values(availabilityMap).reduce((s, m) => s + m, 0);
   if (weeklyMinutes === 0) {
@@ -85,6 +96,7 @@ export async function POST(req: NextRequest) {
     chapters: chaptersList,
     revisionIntervalsDays: profile.revisionIntervalsDays as number[],
     revisionMinutesPerSession: profile.revisionMinutesPerSession,
+    existingRevisions,
   });
 
   const summary = {
