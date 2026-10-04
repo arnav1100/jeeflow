@@ -2,7 +2,9 @@ import {
   NextRequest,
   NextResponse,
 } from "next/server";
+
 import { z } from "zod";
+
 import {
   and,
   eq,
@@ -11,22 +13,22 @@ import {
 
 import { getSession } from "@/lib/auth";
 import { db } from "@/db";
+
 import {
   profiles,
-  revisionSchedule,
   studyPlans,
   studyTasks,
 } from "@/db/schema";
-
-import { generateStudyPlan } from "@/lib/scheduling/engine";
 
 import {
   buildAvailabilityMap,
   buildAvailabilityWindows,
   buildEngineChapters,
-  buildExistingRevisions,
-  buildUpcomingTests,
 } from "@/lib/data/plan-context";
+
+import {
+  generateTodayPlan,
+} from "@/lib/scheduling/today-engine";
 
 import {
   addDaysYmd,
@@ -42,9 +44,7 @@ import {
 
 const schema = z.object({
   strategy: z
-    .literal(
-      "full_syllabus",
-    )
+    .literal("full_syllabus")
     .optional(),
 
   startDate: z
@@ -60,6 +60,14 @@ const schema = z.object({
     .min(1)
     .max(365),
 });
+
+function weekdayForDate(
+  date: string,
+): number {
+  return new Date(
+    `${date}T12:00:00Z`,
+  ).getUTCDay();
+}
 
 export async function POST(
   req: NextRequest,
@@ -83,7 +91,9 @@ export async function POST(
       .catch(() => ({}));
 
   const parsed =
-    schema.safeParse(body);
+    schema.safeParse(
+      body,
+    );
 
   if (!parsed.success) {
     return NextResponse.json(
@@ -98,7 +108,7 @@ export async function POST(
   const userId =
     session.userId;
 
-  const startDate =
+  const requestedStartDate =
     parsed.data.startDate ??
     todayIST();
 
@@ -107,25 +117,19 @@ export async function POST(
 
   const endDate =
     addDaysYmd(
-      startDate,
+      requestedStartDate,
       days - 1,
     );
 
   /*
-   * Exact task schedule = TODAY only.
-   *
-   * Long-term target remains endDate.
+   * Load everything once.
    */
-  const scheduleEndDate =
-    startDate;
-
   const [
     profileRows,
     chaptersList,
     availabilityMap,
     availabilityWindows,
-    upcomingTests,
-    existingRevisions,
+    oldTasks,
   ] = await Promise.all([
     db
       .select()
@@ -150,14 +154,15 @@ export async function POST(
       userId,
     ),
 
-    buildUpcomingTests(
-      userId,
-      startDate,
-    ),
-
-    buildExistingRevisions(
-      userId,
-    ),
+    db
+      .select()
+      .from(studyTasks)
+      .where(
+        eq(
+          studyTasks.userId,
+          userId,
+        ),
+      ),
   ]);
 
   const profile =
@@ -183,7 +188,7 @@ export async function POST(
     );
 
   if (
-    weeklyMinutes === 0
+    weeklyMinutes <= 0
   ) {
     return NextResponse.json(
       {
@@ -194,142 +199,262 @@ export async function POST(
     );
   }
 
-  /*
-   * For TODAY, don't use the entire day's
-   * availability if half the day has already passed.
-   */
   const now =
     new Date();
 
   const ist =
     getISTParts(now);
 
-  const todayWindows =
-    availabilityWindows.filter(
-      (window) =>
-        window.dayOfWeek ===
-        ist.weekday,
-    );
+  const realToday =
+    todayIST();
 
-  const rawRemainingToday =
-    todayWindows.reduce(
-      (sum, window) =>
-        sum +
-        getRemainingWindowMinutes({
-          startTime:
-            window.startTime,
-          endTime:
-            window.endTime,
-          now,
-        }),
-      0,
-    );
+  /*
+   * ============================================
+   * FIND ACTIONABLE DATE + AVAILABLE TIME
+   * ============================================
+   */
 
-  const todayCapacity =
-    applyStudyBuffer(
-      rawRemainingToday,
-      15,
-    );
+  let effectiveDate =
+    requestedStartDate;
+
+  let usableMinutes = 0;
 
   if (
-    startDate ===
-    todayIST()
+    requestedStartDate ===
+    realToday
   ) {
-    availabilityMap[
-      ist.weekday
-    ] = todayCapacity;
-  }
+    /*
+     * For today we only count time
+     * which is ACTUALLY still remaining.
+     */
+    const todayWindows =
+      availabilityWindows.filter(
+        (window) =>
+          window.dayOfWeek ===
+          ist.weekday,
+      );
+
+    const rawRemaining =
+      todayWindows.reduce(
+        (sum, window) =>
+          sum +
+          getRemainingWindowMinutes({
+            startTime:
+              window.startTime,
+
+            endTime:
+              window.endTime,
+
+            now,
+          }),
+        0,
+      );
+
+    usableMinutes =
+      applyStudyBuffer(
+        rawRemaining,
+        15,
+      );
 
     /*
-   * If today's study window is already over,
-   * move the actionable plan to the next day
-   * that has study availability.
-   */
-  let effectiveStartDate =
-    startDate;
+     * Today's window is over.
+     *
+     * Find next available day automatically.
+     */
+    if (
+      usableMinutes < 15
+    ) {
+      let found = false;
 
-  if (
-    startDate === todayIST() &&
-    todayCapacity < 10
-  ) {
-    for (let offset = 1; offset <= 7; offset++) {
-      const candidateDate =
-        addDaysYmd(
-          startDate,
-          offset,
-        );
-
-      const candidate =
-        new Date(
-          `${candidateDate}T12:00:00Z`,
-        );
-
-      const weekday =
-        candidate.getUTCDay();
-
-      if (
-        (availabilityMap[weekday] ?? 0) >=
-        10
+      for (
+        let offset = 1;
+        offset <= 14;
+        offset++
       ) {
-        effectiveStartDate =
-          candidateDate;
-        break;
+        const candidateDate =
+          addDaysYmd(
+            requestedStartDate,
+            offset,
+          );
+
+        const weekday =
+          weekdayForDate(
+            candidateDate,
+          );
+
+        const rawMinutes =
+          availabilityMap[
+            weekday
+          ] ?? 0;
+
+        if (
+          rawMinutes >= 15
+        ) {
+          effectiveDate =
+            candidateDate;
+
+          usableMinutes =
+            applyStudyBuffer(
+              rawMinutes,
+              15,
+            );
+
+          found = true;
+
+          break;
+        }
+      }
+
+      if (!found) {
+        return NextResponse.json(
+          {
+            error:
+              "No upcoming study window was found. Update your availability in Profile.",
+          },
+          { status: 422 },
+        );
       }
     }
+  } else {
+    /*
+     * Future study date:
+     * use its complete availability.
+     */
+    const weekday =
+      weekdayForDate(
+        requestedStartDate,
+      );
+
+    usableMinutes =
+      applyStudyBuffer(
+        availabilityMap[
+          weekday
+        ] ?? 0,
+        15,
+      );
   }
 
-  const result =
-    generateStudyPlan({
-      userId,
-
-      startDate: effectiveStartDate,
-      endDate,
-
-      scheduleEndDate: effectiveStartDate,
-
-      strategy:
-        "full_syllabus",
-
-      availabilityMinutesByWeekday:
-        availabilityMap,
-
-      tests:
-        upcomingTests,
-
-      chapters:
-        chaptersList,
-
-      revisionIntervalsDays:
-        profile.revisionIntervalsDays as number[],
-
-      revisionMinutesPerSession:
-        profile.revisionMinutesPerSession,
-
-      existingRevisions,
-    });
-
   if (
-    result.tasks.length === 0
+    usableMinutes < 15
   ) {
     return NextResponse.json(
       {
         error:
-          result.emptyReason ??
-          "Nothing needs to be scheduled today.",
+          "There is not enough study time in the selected study window.",
       },
       { status: 422 },
     );
   }
 
+  /*
+   * ============================================
+   * MISSED WORK
+   * ============================================
+   *
+   * DailyCheckIn:
+   *
+   * Did it
+   * -> done
+   * -> progress updates
+   *
+   * Didn't do
+   * -> skipped
+   * -> progress remains pending
+   *
+   * The chapter receives a priority boost today.
+   */
+
+  const missedChapterIds =
+    Array.from(
+      new Set(
+        oldTasks
+          .filter(
+            (task) =>
+              task.status ===
+                "skipped" &&
+              task.chapterId !==
+                null &&
+              String(
+                task.scheduledDate,
+              ) <
+                effectiveDate,
+          )
+          .map(
+            (task) =>
+              task.chapterId!,
+          ),
+      ),
+    );
+
+  /*
+   * ============================================
+   * GENERATE EXACTLY ONE DAY
+   * ============================================
+   */
+
+  const todayResult =
+    generateTodayPlan({
+      date:
+        effectiveDate,
+
+      availableMinutes:
+        usableMinutes,
+
+      chapters:
+        chaptersList,
+
+      missedChapterIds,
+    });
+
+  if (
+    todayResult.tasks.length ===
+    0
+  ) {
+    return NextResponse.json(
+      {
+        error:
+          "No pending study tasks were found.",
+      },
+      { status: 422 },
+    );
+  }
+
+  /*
+   * Final defensive duplicate protection.
+   *
+   * Same date + same chapter + same task type
+   * can appear only once.
+   */
+  const uniqueTasks =
+    Array.from(
+      new Map(
+        todayResult.tasks.map(
+          (task) => [
+            `${task.scheduledDate}:${task.chapterId}:${task.taskType}`,
+            task,
+          ],
+        ),
+      ).values(),
+    );
+
   const totalDays =
     daysBetween(
-      startDate,
+      requestedStartDate,
       endDate,
     ) + 1;
+
+  /*
+   * ============================================
+   * SAVE
+   * ============================================
+   */
 
   const plan =
     await db.transaction(
       async (tx) => {
+        /*
+         * Archive previous active plan.
+         */
         await tx
           .update(
             studyPlans,
@@ -345,6 +470,11 @@ export async function POST(
             ),
           );
 
+        /*
+         * Keep completed task history.
+         *
+         * Remove stale unfinished/generated tasks.
+         */
         await tx
           .delete(
             studyTasks,
@@ -373,22 +503,35 @@ export async function POST(
               strategy:
                 "full_syllabus",
 
-              startDate,
+              /*
+               * Long-term target countdown.
+               */
+              startDate:
+                requestedStartDate,
+
               endDate,
 
+              /*
+               * These now represent the
+               * actionable day's workload.
+               */
               totalAvailableMinutes:
-                todayCapacity,
+                usableMinutes,
 
               totalRequiredMinutes:
-                result.scheduledMinutes,
+                uniqueTasks.reduce(
+                  (
+                    sum,
+                    task,
+                  ) =>
+                    sum +
+                    task.estimatedMinutes,
+                  0,
+                ),
 
               status:
                 "active",
 
-              /*
-               * Feasibility warnings are deliberately
-               * not shown as the student's daily plan.
-               */
               warnings: [],
 
               config: {
@@ -398,142 +541,105 @@ export async function POST(
                 dailyPlanOnly:
                   true,
 
-                todayCapacityMinutes:
-                  todayCapacity,
+                taskDate:
+                  effectiveDate,
+
+                usableMinutes,
 
                 scheduledMinutes:
-                  result.scheduledMinutes,
+                  uniqueTasks.reduce(
+                    (
+                      sum,
+                      task,
+                    ) =>
+                      sum +
+                      task.estimatedMinutes,
+                    0,
+                  ),
+
+                unusedMinutes:
+                  Math.max(
+                    0,
+                    usableMinutes -
+                      uniqueTasks.reduce(
+                        (
+                          sum,
+                          task,
+                        ) =>
+                          sum +
+                          task.estimatedMinutes,
+                        0,
+                      ),
+                  ),
+
+                subjectsTouched:
+                  Array.from(
+                    new Set(
+                      uniqueTasks.map(
+                        (task) =>
+                          task.subjectSlug,
+                      ),
+                    ),
+                  ),
               },
             })
             .returning();
 
-        if (
-          result.tasks.length >
-          0
-        ) {
-          await tx
-            .insert(
-              studyTasks,
-            )
-            .values(
-              result.tasks.map(
-                (task) => ({
-                  userId,
-
-                  planId:
-                    created.id,
-
-                  chapterId:
-                    task.chapterId,
-
-                  subjectSlug:
-                    task.subjectSlug,
-
-                  taskType:
-                    task.taskType,
-
-                  title:
-                    task.title,
-
-                  estimatedMinutes:
-                    task.estimatedMinutes,
-
-                  scheduledDate:
-                    task.scheduledDate,
-
-                  status:
-                    "pending" as const,
-
-                  priority:
-                    task.priority,
-
-                  revisionNumber:
-                    task.revisionNumber,
-                }),
-              ),
-            );
-        }
-
         /*
-         * Preserve completed revisions.
-         * Rebuild only pending/scheduled ones.
+         * Insert unique daily tasks.
          */
         await tx
-          .delete(
-            revisionSchedule,
+          .insert(
+            studyTasks,
           )
-          .where(
-            and(
-              eq(
-                revisionSchedule.userId,
+          .values(
+            uniqueTasks.map(
+              (task) => ({
                 userId,
-              ),
-              ne(
-                revisionSchedule.status,
-                "done",
-              ),
+
+                planId:
+                  created.id,
+
+                chapterId:
+                  task.chapterId,
+
+                subjectSlug:
+                  task.subjectSlug,
+
+                taskType:
+                  task.taskType,
+
+                title:
+                  task.title,
+
+                estimatedMinutes:
+                  task.estimatedMinutes,
+
+                scheduledDate:
+                  task.scheduledDate,
+
+                status:
+                  "pending" as const,
+
+                priority:
+                  task.priority,
+
+                revisionNumber:
+                  task.revisionNumber,
+              }),
             ),
           );
 
-        const completedKeys =
-          new Set(
-            existingRevisions
-              .filter(
-                (revision) =>
-                  revision.status ===
-                  "done",
-              )
-              .map(
-                (revision) =>
-                  `${revision.chapterId}:${revision.revisionNumber}`,
-              ),
-          );
-
-        const revisionsToInsert =
-          result.revisions.filter(
-            (revision) =>
-              !completedKeys.has(
-                `${revision.chapterId}:${revision.revisionNumber}`,
-              ),
-          );
-
-        if (
-          revisionsToInsert.length >
-          0
-        ) {
-          await tx
-            .insert(
-              revisionSchedule,
-            )
-            .values(
-              revisionsToInsert.map(
-                (revision) => ({
-                  userId,
-
-                  chapterId:
-                    revision.chapterId,
-
-                  revisionNumber:
-                    revision.revisionNumber,
-
-                  intervalDays:
-                    revision.intervalDays,
-
-                  dueDate:
-                    revision.dueDate,
-
-                  status:
-                    revision.status ===
-                    "pending"
-                      ? ("pending" as const)
-                      : revision.status ===
-                          "skipped"
-                        ? ("skipped" as const)
-                        : ("scheduled" as const),
-                }),
-              ),
-            );
-        }
+        /*
+         * IMPORTANT:
+         *
+         * revisionSchedule is intentionally
+         * untouched here.
+         *
+         * Today engine's revision slot will be
+         * added separately without destroying
+         * revision history.
+         */
 
         await tx
           .update(profiles)
@@ -555,6 +661,14 @@ export async function POST(
       },
     );
 
+  const scheduledMinutes =
+    uniqueTasks.reduce(
+      (sum, task) =>
+        sum +
+        task.estimatedMinutes,
+      0,
+    );
+
   return NextResponse.json({
     plan,
 
@@ -564,16 +678,37 @@ export async function POST(
     daysLeft:
       totalDays,
 
-    startDate,
-    endDate,
+    targetStartDate:
+      requestedStartDate,
 
-    todayCapacityMinutes:
-      todayCapacity,
+    targetEndDate:
+      endDate,
+
+    taskDate:
+      effectiveDate,
+
+    usableMinutes,
+
+    scheduledMinutes,
+
+    unusedMinutes:
+      Math.max(
+        0,
+        usableMinutes -
+          scheduledMinutes,
+      ),
+
+    subjectsTouched:
+      Array.from(
+        new Set(
+          uniqueTasks.map(
+            (task) =>
+              task.subjectSlug,
+          ),
+        ),
+      ),
 
     taskCount:
-      result.tasks.length,
-
-    scheduledMinutes:
-      result.scheduledMinutes,
+      uniqueTasks.length,
   });
 }
