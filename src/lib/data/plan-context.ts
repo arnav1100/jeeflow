@@ -10,6 +10,7 @@ import {
 } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { format } from "date-fns";
+
 import type {
   EngineChapter,
   EngineTestEvent,
@@ -17,6 +18,9 @@ import type {
   SubjectSlug,
 } from "@/lib/scheduling/types";
 
+/**
+ * Build the chapter data required by the planner.
+ */
 export async function buildEngineChapters(
   userId: string,
 ): Promise<EngineChapter[]> {
@@ -27,123 +31,162 @@ export async function buildEngineChapters(
     allPrereqs,
   ] = await Promise.all([
     db.select().from(subjects),
+
     db.select().from(chapters),
+
     db
       .select()
       .from(userChapters)
-      .where(eq(userChapters.userId, userId)),
-    db.select().from(chapterPrerequisites),
+      .where(
+        eq(
+          userChapters.userId,
+          userId,
+        ),
+      ),
+
+    db
+      .select()
+      .from(chapterPrerequisites),
   ]);
 
   const subjectById = new Map(
-    allSubjects.map((s) => [s.id, s]),
-  );
-
-  const ucByChapter = new Map(
-    allUserChapters.map((uc) => [
-      uc.chapterId,
-      uc,
+    allSubjects.map((subject) => [
+      subject.id,
+      subject,
     ]),
   );
 
-  const prereqsByChapter = new Map<
-    string,
-    string[]
-  >();
+  const userChapterByChapterId =
+    new Map(
+      allUserChapters.map(
+        (userChapter) => [
+          userChapter.chapterId,
+          userChapter,
+        ],
+      ),
+    );
 
-  for (const p of allPrereqs) {
+  const prereqsByChapter =
+    new Map<string, string[]>();
+
+  for (const prereq of allPrereqs) {
     const list =
-      prereqsByChapter.get(p.chapterId) ?? [];
+      prereqsByChapter.get(
+        prereq.chapterId,
+      ) ?? [];
 
-    list.push(p.prerequisiteChapterId);
+    list.push(
+      prereq.prerequisiteChapterId,
+    );
 
     prereqsByChapter.set(
-      p.chapterId,
+      prereq.chapterId,
       list,
     );
   }
 
   const result: EngineChapter[] = [];
 
-  for (const c of allChapters) {
-    const uc = ucByChapter.get(c.id);
+  for (const chapter of allChapters) {
+    const userChapter =
+      userChapterByChapterId.get(
+        chapter.id,
+      );
 
-    if (!uc) continue;
+    // Chapter has not been initialized
+    // for this user.
+    if (!userChapter) {
+      continue;
+    }
 
     const subject =
-      subjectById.get(c.subjectId);
+      subjectById.get(
+        chapter.subjectId,
+      );
 
     const subjectSlug =
       (subject?.slug as SubjectSlug) ??
       "physics";
 
     /*
-     * First use our exact JEE sequence.
-     * If a DB chapter name does not match,
-     * fall back to its existing orderIndex.
+     * Database orderIndex is the single
+     * source of truth for chapter sequence.
      */
-    const sequenceOrder = c.orderIndex;
-    
+    const sequenceOrder =
+      chapter.orderIndex;
+
     result.push({
-      chapterId: c.id,
+      chapterId:
+        chapter.id,
+
       subjectSlug,
-      name: c.name,
+
+      name:
+        chapter.name,
 
       sequenceOrder,
 
-      weightage: c.weightage,
-      bucket: uc.bucket,
+      weightage:
+        chapter.weightage,
+
+      bucket:
+        userChapter.bucket,
 
       prerequisiteIds:
-        prereqsByChapter.get(c.id) ?? [],
+        prereqsByChapter.get(
+          chapter.id,
+        ) ?? [],
 
       status:
-        uc.status as EngineChapter["status"],
+        userChapter.status as EngineChapter["status"],
 
       confidence:
-        uc.confidence as EngineChapter["confidence"],
+        userChapter.confidence as EngineChapter["confidence"],
 
       prerequisiteChoice:
-        uc.prerequisiteChoice,
+        userChapter.prerequisiteChoice,
 
       lectureDurationMinutes:
         Math.max(
           0,
-          uc.lectureDurationMinutes,
+          userChapter.lectureDurationMinutes,
         ),
 
       lectureProgressMinutes:
         Math.max(
           0,
-          uc.lectureProgressMinutes,
+          userChapter.lectureProgressMinutes,
         ),
 
       manualDurationSet:
-        uc.manualOverrideMinutes !== null,
+        userChapter.manualOverrideMinutes !==
+        null,
 
       remainingLectureMinutes:
         Math.max(
           0,
-          uc.lectureDurationMinutes -
-            uc.lectureProgressMinutes,
+          userChapter.lectureDurationMinutes -
+            userChapter.lectureProgressMinutes,
         ),
 
       practicePendingMinutes:
-        uc.practiceStatus === "done"
+        userChapter.practiceStatus ===
+        "done"
           ? 0
-          : uc.practiceMinutes,
+          : userChapter.practiceMinutes,
 
       pyqPendingMinutes:
-        uc.pyqStatus === "done"
+        userChapter.pyqStatus ===
+        "done"
           ? 0
-          : uc.pyqMinutes,
+          : userChapter.pyqMinutes,
 
       revisionStatus:
-        uc.revisionStatus as EngineChapter["revisionStatus"],
+        userChapter.revisionStatus as EngineChapter["revisionStatus"],
 
       startedAt:
-        uc.startedAt
-          ? uc.startedAt.toISOString()
+        userChapter.startedAt
+          ? userChapter.startedAt.toISOString()
           : null,
     });
   }
@@ -151,6 +194,99 @@ export async function buildEngineChapters(
   return result;
 }
 
+/**
+ * Weekly availability totals.
+ *
+ * Used by long-term feasibility calculations.
+ *
+ * key:
+ * 0 = Sunday
+ * 1 = Monday
+ * ...
+ * 6 = Saturday
+ */
+export async function buildAvailabilityMap(
+  userId: string,
+): Promise<Record<number, number>> {
+  const rows = await db
+    .select()
+    .from(availability)
+    .where(
+      eq(
+        availability.userId,
+        userId,
+      ),
+    );
+
+  const map: Record<
+    number,
+    number
+  > = {
+    0: 0,
+    1: 0,
+    2: 0,
+    3: 0,
+    4: 0,
+    5: 0,
+    6: 0,
+  };
+
+  for (const row of rows) {
+    const [startHour, startMinute] =
+      row.startTime
+        .split(":")
+        .map(Number);
+
+    const [endHour, endMinute] =
+      row.endTime
+        .split(":")
+        .map(Number);
+
+    let minutes = 0;
+
+    const start =
+      startHour * 60 +
+      startMinute;
+
+    const end =
+      endHour * 60 +
+      endMinute;
+
+    /*
+     * Normal window:
+     * 16:00 -> 22:00
+     */
+    if (end > start) {
+      minutes =
+        end - start;
+    } else if (end < start) {
+      /*
+       * Overnight window:
+       * 20:00 -> 01:00
+       */
+      minutes =
+        24 * 60 -
+        start +
+        end;
+    }
+
+    map[row.dayOfWeek] =
+      (map[row.dayOfWeek] ?? 0) +
+      Math.max(
+        0,
+        minutes,
+      );
+  }
+
+  return map;
+}
+
+/**
+ * Raw availability windows.
+ *
+ * Used by the today scheduler because
+ * it needs clock times, not only totals.
+ */
 export async function buildAvailabilityWindows(
   userId: string,
 ) {
@@ -167,47 +303,18 @@ export async function buildAvailabilityWindows(
   return rows.map((row) => ({
     dayOfWeek:
       row.dayOfWeek,
+
     startTime:
       row.startTime,
+
     endTime:
       row.endTime,
   }));
 }
 
-  const map: Record<number, number> = {
-    0: 0,
-    1: 0,
-    2: 0,
-    3: 0,
-    4: 0,
-    5: 0,
-    6: 0,
-  };
-
-  for (const r of rows) {
-    const [sh, sm] = r.startTime
-      .split(":")
-      .map(Number);
-
-    const [eh, em] = r.endTime
-      .split(":")
-      .map(Number);
-
-    const minutes = Math.max(
-      0,
-      eh * 60 +
-        em -
-        (sh * 60 + sm),
-    );
-
-    map[r.dayOfWeek] =
-      (map[r.dayOfWeek] ?? 0) +
-      minutes;
-  }
-
-  return map;
-}
-
+/**
+ * Upcoming tests from the selected date.
+ */
 export async function buildUpcomingTests(
   userId: string,
   fromDate: string,
@@ -215,51 +322,86 @@ export async function buildUpcomingTests(
   const rows = await db
     .select()
     .from(tests)
-    .where(eq(tests.userId, userId));
+    .where(
+      eq(
+        tests.userId,
+        userId,
+      ),
+    );
 
   return rows
-    .map((t) => ({
-      ...t,
+    .map((test) => ({
+      ...test,
+
       dateStr:
-        typeof t.testDate === "string"
-          ? t.testDate
+        typeof test.testDate ===
+        "string"
+          ? test.testDate
           : format(
-              t.testDate as unknown as Date,
+              test.testDate as unknown as Date,
               "yyyy-MM-dd",
             ),
     }))
     .filter(
-      (t) => t.dateStr >= fromDate,
+      (test) =>
+        test.dateStr >=
+        fromDate,
     )
-    .map((t) => ({
-      date: t.dateStr,
+    .map((test) => ({
+      date:
+        test.dateStr,
+
       durationMinutes:
-        t.durationMinutes,
+        test.durationMinutes,
+
       travelMinutes:
-        t.travelMinutes,
-      title: t.title,
+        test.travelMinutes,
+
+      title:
+        test.title,
     }));
 }
 
+/**
+ * Existing revision history.
+ *
+ * This allows plan regeneration without
+ * losing already completed revisions.
+ */
 export async function buildExistingRevisions(
   userId: string,
-): Promise<EngineExistingRevision[]> {
+): Promise<
+  EngineExistingRevision[]
+> {
   const rows = await db
     .select()
     .from(revisionSchedule)
-    .where(eq(revisionSchedule.userId, userId));
+    .where(
+      eq(
+        revisionSchedule.userId,
+        userId,
+      ),
+    );
 
   return rows.map((row) => ({
-    chapterId: row.chapterId,
-    revisionNumber: row.revisionNumber,
-    intervalDays: row.intervalDays,
+    chapterId:
+      row.chapterId,
+
+    revisionNumber:
+      row.revisionNumber,
+
+    intervalDays:
+      row.intervalDays,
+
     dueDate:
-      typeof row.dueDate === "string"
+      typeof row.dueDate ===
+      "string"
         ? row.dueDate
         : format(
             row.dueDate as unknown as Date,
             "yyyy-MM-dd",
           ),
+
     status:
       row.status as EngineExistingRevision["status"],
   }));
