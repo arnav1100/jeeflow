@@ -9,24 +9,109 @@ export interface ChapterStatusInput {
 }
 
 /**
- * The single source of truth for a chapter's status.
+ * Core study complete means:
  *
- * IMPORTANT product rule: watching a lecture alone must NEVER mark a chapter
- * completed. Completed = lecture + practice/DPP + PYQs + revision all done.
+ * Lecture ✓
+ * Practice / DPP ✓
+ * PYQ ✓
+ *
+ * At this point the NEXT chapter may start.
+ *
+ * Revisions continue separately in the background.
  */
-export function computeChapterStatus(input: ChapterStatusInput): ChapterStatus {
-  const lectureComplete = input.lectureProgressMinutes >= input.lectureDurationMinutes && input.lectureDurationMinutes > 0;
-  const practiceDone = input.practiceStatus === "done";
-  const pyqDone = input.pyqStatus === "done";
-  const revisionDone = input.revisionStatus === "done";
+export function isChapterCoreComplete(
+  input: ChapterStatusInput,
+): boolean {
+  const lectureComplete =
+    input.lectureDurationMinutes > 0 &&
+    input.lectureProgressMinutes >=
+      input.lectureDurationMinutes;
 
-  if (lectureComplete && practiceDone && pyqDone && revisionDone) return "completed";
-  if (lectureComplete && practiceDone && pyqDone) return "revision_pending";
-  if (lectureComplete && (!practiceDone || !pyqDone)) return "pyq_pending";
-  if (input.lectureProgressMinutes > 0) return "in_progress";
-  return "not_started";
+  const practiceDone =
+    input.practiceStatus === "done";
+
+  const pyqDone =
+    input.pyqStatus === "done";
+
+  return (
+    lectureComplete &&
+    practiceDone &&
+    pyqDone
+  );
 }
 
-export function isChapterFullyComplete(input: ChapterStatusInput): boolean {
-  return computeChapterStatus(input) === "completed";
+/**
+ * Fully complete means:
+ *
+ * Lecture ✓
+ * Practice ✓
+ * PYQ ✓
+ * All planned revisions ✓
+ *
+ * This remains the final chapter completion state.
+ */
+export function isChapterFullyComplete(
+  input: ChapterStatusInput,
+): boolean {
+  return (
+    isChapterCoreComplete(input) &&
+    input.revisionStatus === "done"
+  );
+}
+
+/**
+ * Single source of truth for the stored chapter status.
+ *
+ * IMPORTANT:
+ * "revision_pending" is already study-ready.
+ * It should NOT block the next chapter.
+ */
+export function computeChapterStatus(
+  input: ChapterStatusInput,
+): ChapterStatus {
+  const lectureComplete =
+    input.lectureDurationMinutes > 0 &&
+    input.lectureProgressMinutes >=
+      input.lectureDurationMinutes;
+
+  const practiceDone =
+    input.practiceStatus === "done";
+
+  const pyqDone =
+    input.pyqStatus === "done";
+
+  const revisionDone =
+    input.revisionStatus === "done";
+
+  if (
+    lectureComplete &&
+    practiceDone &&
+    pyqDone &&
+    revisionDone
+  ) {
+    return "completed";
+  }
+
+  if (
+    lectureComplete &&
+    practiceDone &&
+    pyqDone
+  ) {
+    return "revision_pending";
+  }
+
+  if (
+    lectureComplete &&
+    (!practiceDone || !pyqDone)
+  ) {
+    return "pyq_pending";
+  }
+
+  if (
+    input.lectureProgressMinutes > 0
+  ) {
+    return "in_progress";
+  }
+
+  return "not_started";
 }
