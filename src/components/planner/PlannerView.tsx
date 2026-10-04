@@ -243,6 +243,47 @@ export default function PlannerView({
     const [setupDone, setSetupDone] =
     useState(false);
 
+    const [setupChecked, setSetupChecked] =
+    useState(false);
+
+    useEffect(() => {
+    let cancelled = false;
+
+    async function checkPlannerSetup() {
+      try {
+        const res = await fetch(
+          "/api/plan/setup-progress",
+          {
+            cache: "no-store",
+          },
+        );
+
+        const data = await res.json();
+
+        if (!cancelled) {
+          setSetupDone(
+            res.ok &&
+              data.setupCompleted === true,
+          );
+        }
+      } catch {
+        if (!cancelled) {
+          setSetupDone(false);
+        }
+      } finally {
+        if (!cancelled) {
+          setSetupChecked(true);
+        }
+      }
+    }
+
+    checkPlannerSetup();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const tasksByDate = useMemo(() => {
     const map = new Map<
       string,
@@ -813,6 +854,20 @@ export default function PlannerView({
       strategy === "bucket_strategy" &&
       buckets.length === 0
     );
+
+    if (!setupChecked) {
+    return (
+      <div className="pb-6">
+        <h1 className="text-2xl font-extrabold">
+          Planner
+        </h1>
+
+        <p className="mt-3 text-sm text-[#64748B]">
+          Loading your preparation…
+        </p>
+      </div>
+    );
+  }
 
     if (!setupDone) {
     return (
