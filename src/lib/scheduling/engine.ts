@@ -65,6 +65,16 @@ interface CalendarDay {
   testTitle?: string;
 }
 
+function isCoreStudyComplete(
+  chapter: EngineChapter,
+): boolean {
+  return (
+    chapter.remainingLectureMinutes === 0 &&
+    chapter.practicePendingMinutes === 0 &&
+    chapter.pyqPendingMinutes === 0
+  );
+}
+
 function lectureMinutesFor(
   c: EngineChapter,
   strategy: Strategy,
@@ -366,6 +376,29 @@ export function generateStudyPlan(
       input.selectedBuckets,
       input.customChapterIds,
     );
+
+  /*
+ * Study and revision are separate concerns.
+ *
+ * studyPool:
+ * chapters that still need lecture/practice/PYQ.
+ *
+ * revisionPool:
+ * chapters whose core study is finished but
+ * whose spaced revisions are still pending.
+ */
+const revisionPool = input.chapters.filter(
+  (chapter) =>
+    isCoreStudyComplete(chapter) &&
+    chapter.revisionStatus !== "done",
+);
+
+if (input.strategy === "full_syllabus") {
+  pool = pool.filter(
+    (chapter) =>
+      !isCoreStudyComplete(chapter),
+  );
+}
 
   if (pool.length === 0) {
     return {
@@ -1086,119 +1119,246 @@ export function generateStudyPlan(
     }
   }
 
-  // ================================================
+    // ================================================
   // PASS 2: SPACED REVISION
   // ================================================
+  //
+  // Revision is independent from the study queue.
+  //
+  // This allows:
+  //
+  // Old chapter:
+  // Lecture ✓ Practice ✓ PYQ ✓
+  // Revision 1 ✓
+  // Revision 2/3 pending
+  //
+  // while simultaneously:
+  //
+  // Next chapter:
+  // Lecture / Practice / PYQ continues.
+  // ================================================
 
-  const revisions:
-    GeneratedRevision[] = [];
+  const revisions: GeneratedRevision[] = [];
 
   let revisionsDropped = 0;
 
-  const capacityByDate =
-    new Map(
-      calendar.map((d) => [
-        d.date,
-        d.capacity,
-      ]),
-    );
+  const capacityByDate = new Map(
+    calendar.map((d) => [
+      d.date,
+      d.capacity,
+    ]),
+  );
 
   const sessionMin =
     input.revisionMinutesPerSession;
 
-  type Pending = {
+  type PendingRevision = {
     chapter: EngineChapter;
-    n: number;
-    interval: number;
-    due: string;
+    revisionNumber: number;
+    intervalDays: number;
+    dueDate: string;
   };
 
-  const pending:
-    Pending[] = [];
+  const pendingRevisions: PendingRevision[] = [];
 
-  const scheduledChapterIds =
-    new Set<string>();
+  /*
+   * Existing revision rows indexed by:
+   *
+   * chapterId:revisionNumber
+   *
+   * Example:
+   * abc:R1 -> done
+   * abc:R2 -> scheduled
+   */
+  const existingRevisionMap = new Map(
+    (input.existingRevisions ?? []).map(
+      (revision) => [
+        `${revision.chapterId}:${revision.revisionNumber}`,
+        revision,
+      ],
+    ),
+  );
 
-  for (const s of SUBJECTS) {
-    for (const item of queues[s]) {
-      scheduledChapterIds.add(
+  /*
+   * Chapters which may need revisions.
+   *
+   * Two sources:
+   *
+   * 1. revisionPool
+   *    Core study was already completed before this plan.
+   *
+   * 2. queues
+   *    Chapters being studied in this newly generated plan.
+   */
+  const revisionCandidates = new Map<
+    string,
+    EngineChapter
+  >();
+
+  for (const chapter of revisionPool) {
+    revisionCandidates.set(
+      chapter.chapterId,
+      chapter,
+    );
+  }
+
+  for (const subject of SUBJECTS) {
+    for (const item of queues[subject]) {
+      revisionCandidates.set(
         item.chapter.chapterId,
+        item.chapter,
       );
     }
   }
 
-  for (const chapterId of scheduledChapterIds) {
-    const chapter =
-      pool.find(
-        (c) =>
-          c.chapterId ===
-          chapterId,
-      );
-
+  /*
+   * Build revision requirements.
+   */
+  for (const chapter of revisionCandidates.values()) {
     if (
-      !chapter ||
-      chapter.revisionStatus ===
-        "done"
+      chapter.revisionStatus === "done"
     ) {
       continue;
     }
 
-    const ready =
-      lastTaskDate[
-        chapterId
-      ] ??
+    /*
+     * For a chapter studied in this plan,
+     * revisions start after its last study task.
+     *
+     * For an older core-complete chapter:
+     * - existing revision due dates are preserved
+     * - if no revision row exists yet, startDate
+     *   acts as the fallback anchor.
+     */
+    const readyDate =
+      lastTaskDate[chapter.chapterId] ??
       input.startDate;
 
     input.revisionIntervalsDays.forEach(
-      (
-        intervalDays,
-        idx,
-      ) => {
-        const interval =
+      (rawInterval, index) => {
+        const revisionNumber =
+          index + 1;
+
+        const intervalDays =
           Math.max(
             1,
-            intervalDays,
+            rawInterval,
           );
 
-        pending.push({
-          chapter,
-          n: idx + 1,
-          interval,
-          due: format(
+        const key =
+          `${chapter.chapterId}:${revisionNumber}`;
+
+        const existing =
+          existingRevisionMap.get(key);
+
+        /*
+         * A completed revision is history.
+         *
+         * Preserve it in the result but do NOT
+         * create another revision task.
+         */
+        if (
+          existing?.status === "done"
+        ) {
+          revisions.push({
+            chapterId:
+              chapter.chapterId,
+
+            revisionNumber,
+
+            intervalDays:
+              existing.intervalDays,
+
+            dueDate:
+              existing.dueDate,
+
+            status: "done",
+          });
+
+          return;
+        }
+
+        /*
+         * Preserve an existing due date.
+         *
+         * This is important when a student
+         * regenerates the planner: R2/R3 should
+         * not restart their countdown.
+         */
+        const dueDate =
+          existing?.dueDate ??
+          format(
             addDays(
-              parseISO(ready),
-              interval,
+              parseISO(readyDate),
+              intervalDays,
             ),
             "yyyy-MM-dd",
-          ),
+          );
+
+        pendingRevisions.push({
+          chapter,
+          revisionNumber,
+          intervalDays,
+          dueDate,
         });
       },
     );
   }
 
-  pending.sort(
-    (a, b) =>
-      a.due === b.due
-        ? a.n - b.n
-        : a.due < b.due
-          ? -1
-          : 1,
+  /*
+   * Earlier revision first.
+   * On the same date, R1 before R2 before R3.
+   */
+  pendingRevisions.sort(
+    (a, b) => {
+      if (
+        a.dueDate ===
+        b.dueDate
+      ) {
+        return (
+          a.revisionNumber -
+          b.revisionNumber
+        );
+      }
+
+      return a.dueDate <
+        b.dueDate
+        ? -1
+        : 1;
+    },
   );
 
-  for (const r of pending) {
-    let placed:
+  /*
+   * Place pending revisions into whatever
+   * study capacity remains after normal study.
+   */
+  for (const revision of pendingRevisions) {
+    let placedDate:
       | string
       | null = null;
 
+    /*
+     * If revision is already overdue, try
+     * from today/startDate rather than looking
+     * before the plan window.
+     */
+    const effectiveDueDate =
+      revision.dueDate <
+      input.startDate
+        ? input.startDate
+        : revision.dueDate;
+
     if (
-      r.due <=
+      effectiveDueDate <=
       input.endDate
     ) {
-      const startIdx =
+      const startIndex =
         Math.max(
           0,
           differenceInCalendarDays(
-            parseISO(r.due),
+            parseISO(
+              effectiveDueDate,
+            ),
             parseISO(
               input.startDate,
             ),
@@ -1206,75 +1366,112 @@ export function generateStudyPlan(
         );
 
       for (
-        let i = startIdx;
+        let i = startIndex;
         i < calendar.length;
         i++
       ) {
-        const d =
+        const date =
           calendar[i].date;
 
-        const free =
+        const freeMinutes =
           (capacityByDate.get(
-            d,
+            date,
           ) ?? 0) -
-          (used[d] ?? 0);
+          (used[date] ?? 0);
 
         if (
-          free >=
+          freeMinutes >=
           sessionMin
         ) {
-          placed = d;
+          placedDate =
+            date;
+
           break;
         }
       }
     }
 
-    if (placed) {
+    if (placedDate) {
       tasks.push({
         chapterId:
-          r.chapter
-            .chapterId,
+          revision.chapter.chapterId,
 
         subjectSlug:
-          r.chapter
-            .subjectSlug,
+          revision.chapter.subjectSlug,
 
         taskType:
           "revision",
 
         title:
-          r.chapter.name,
+          revision.chapter.name,
 
         estimatedMinutes:
           sessionMin,
 
         scheduledDate:
-          placed,
+          placedDate,
 
         priority: 60,
 
         revisionNumber:
-          r.n,
+          revision.revisionNumber,
       });
 
-      used[placed] =
-        (used[placed] ??
-          0) +
+      used[placedDate] =
+        (used[placedDate] ?? 0) +
         sessionMin;
-    } else if (
-      r.due <=
-      input.endDate
-    ) {
-      revisionsDropped += 1;
-    }
 
-    revisions.push({
-  chapterId: r.chapter.chapterId,
-  revisionNumber: r.n,
-  intervalDays: r.interval,
-  dueDate: placed ?? r.due,
-  status: placed ? "scheduled" : "pending",
-});
+      revisions.push({
+        chapterId:
+          revision.chapter.chapterId,
+
+        revisionNumber:
+          revision.revisionNumber,
+
+        intervalDays:
+          revision.intervalDays,
+
+        /*
+         * Keep the real revision due date.
+         *
+         * scheduledDate belongs to the task.
+         * dueDate belongs to the revision rule.
+         */
+        dueDate:
+          revision.dueDate,
+
+        status:
+          "scheduled",
+      });
+    } else {
+      /*
+       * Keep future / currently unplaceable
+       * revision in the revision schedule.
+       */
+      revisions.push({
+        chapterId:
+          revision.chapter.chapterId,
+
+        revisionNumber:
+          revision.revisionNumber,
+
+        intervalDays:
+          revision.intervalDays,
+
+        dueDate:
+          revision.dueDate,
+
+        status:
+          "pending",
+      });
+
+      if (
+        revision.dueDate <=
+        input.endDate
+      ) {
+        revisionsDropped += 1;
+      }
+    }
   }
 
   if (
@@ -1285,7 +1482,7 @@ export function generateStudyPlan(
         revisionsDropped > 1
           ? "s"
           : ""
-      } could not fit in your free time. A longer plan gives them room.`,
+      } could not fit in your free time. A longer plan or lighter daily workload will give them room.`,
     );
   }
 
