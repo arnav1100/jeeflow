@@ -106,7 +106,7 @@ function estimateChapterTotalMinutes(
 }
 
 function buildCalendar(
-  input: ,
+  input: GeneratePlanInput,
   days: number,
 ): CalendarDay[] {
   const start = parseISO(input.startDate);
