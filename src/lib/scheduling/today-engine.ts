@@ -10,66 +10,27 @@ const SUBJECTS: SubjectSlug[] = [
   "maths",
 ];
 
-/*
- * Daily task sizing.
- *
- * We deliberately keep sessions reasonably
- * small so the plan feels executable.
- */
-const MIN_TASK_MINUTES = 25;
+const MIN_NORMAL_TASK = 20;
+const MIN_EMERGENCY_TASK = 15;
 
-const TARGET_LECTURE_MINUTES = 60;
-const MAX_LECTURE_MINUTES = 90;
-
-const TARGET_PRACTICE_MINUTES = 45;
-const MAX_PRACTICE_MINUTES = 60;
-
-const TARGET_PYQ_MINUTES = 45;
-const MAX_PYQ_MINUTES = 60;
+const MAX_LECTURE = 90;
+const MAX_PRACTICE = 60;
+const MAX_PYQ = 60;
 
 export interface GenerateTodayPlanInput {
   date: string;
-
-  /**
-   * IMPORTANT:
-   * This should already have safety/buffer removed.
-   *
-   * Example:
-   * 155 raw minutes
-   * -> 131 usable minutes
-   */
   availableMinutes: number;
-
   chapters: EngineChapter[];
-
-  /**
-   * Subjects/chapters where yesterday's work
-   * was missed can be boosted.
-   *
-   * Optional for now.
-   */
   missedChapterIds?: string[];
 }
 
 export interface GenerateTodayPlanResult {
   tasks: GeneratedTask[];
-
   scheduledMinutes: number;
-
   unusedMinutes: number;
-
   subjectsTouched: SubjectSlug[];
 }
 
-/**
- * Core study means:
- *
- * Lecture
- * + Practice/DPP
- * + PYQ
- *
- * Revision is intentionally NOT included here.
- */
 function hasCoreWork(
   chapter: EngineChapter,
 ): boolean {
@@ -80,22 +41,6 @@ function hasCoreWork(
   );
 }
 
-/**
- * Find the next chapter that still has core
- * work in this subject.
- *
- * Already studied random chapters are naturally
- * skipped.
- *
- * Example:
- *
- * Sets             ✓
- * Complex Numbers  pending
- * Quadratic        ✓
- * Matrices         pending
- *
- * -> Complex Numbers
- */
 function getNextChapter(
   chapters: EngineChapter[],
   subject: SubjectSlug,
@@ -115,41 +60,21 @@ function getNextChapter(
   );
 }
 
-/**
- * Determine what the student should do next
- * inside a chapter.
- *
- * Order:
- * Lecture -> Practice -> PYQ
- */
 function getNextWork(
   chapter: EngineChapter,
-): {
-  taskType:
-    | "lecture"
-    | "practice"
-    | "pyq";
-
-  remainingMinutes: number;
-
-  targetMinutes: number;
-
-  maxMinutes: number;
-} | null {
+) {
   if (
     chapter.remainingLectureMinutes > 0
   ) {
     return {
-      taskType: "lecture",
+      taskType:
+        "lecture" as const,
 
       remainingMinutes:
         chapter.remainingLectureMinutes,
 
-      targetMinutes:
-        TARGET_LECTURE_MINUTES,
-
       maxMinutes:
-        MAX_LECTURE_MINUTES,
+        MAX_LECTURE,
     };
   }
 
@@ -157,16 +82,14 @@ function getNextWork(
     chapter.practicePendingMinutes > 0
   ) {
     return {
-      taskType: "practice",
+      taskType:
+        "practice" as const,
 
       remainingMinutes:
         chapter.practicePendingMinutes,
 
-      targetMinutes:
-        TARGET_PRACTICE_MINUTES,
-
       maxMinutes:
-        MAX_PRACTICE_MINUTES,
+        MAX_PRACTICE,
     };
   }
 
@@ -174,193 +97,143 @@ function getNextWork(
     chapter.pyqPendingMinutes > 0
   ) {
     return {
-      taskType: "pyq",
+      taskType:
+        "pyq" as const,
 
       remainingMinutes:
         chapter.pyqPendingMinutes,
 
-      targetMinutes:
-        TARGET_PYQ_MINUTES,
-
       maxMinutes:
-        MAX_PYQ_MINUTES,
+        MAX_PYQ,
     };
   }
 
   return null;
 }
 
-/**
- * How many subjects should we try to touch today?
- *
- * >= 3h  -> all three
- * >= 2h  -> try all three with smaller blocks
- * >= 90m -> two
- * < 90m  -> one
- */
-function desiredSubjectCount(
-  availableMinutes: number,
-): number {
-  if (availableMinutes >= 120) {
-    return 3;
-  }
-
-  if (availableMinutes >= 90) {
-    return 2;
-  }
-
-  return 1;
-}
-
-/**
- * Build a single task.
- */
-function makeTask({
-  chapter,
-  taskType,
-  minutes,
-  date,
-  priority,
-}: {
-  chapter: EngineChapter;
-
-  taskType:
-    | "lecture"
-    | "practice"
-    | "pyq";
-
-  minutes: number;
-
-  date: string;
-
-  priority: number;
-}): GeneratedTask {
-  return {
-    chapterId:
-      chapter.chapterId,
-
-    subjectSlug:
-      chapter.subjectSlug,
-
-    taskType,
-
-    title:
-      chapter.name,
-
-    estimatedMinutes:
-      minutes,
-
-    scheduledDate:
-      date,
-
-    priority,
-  };
-}
-
-/**
- * Generates ONLY today's core study tasks.
- *
- * This engine intentionally does not:
- *
- * - create a 60/90-day daily timetable
- * - permanently trim chapters
- * - calculate scary total workload messages
- *
- * It only answers:
- *
- * "Given the student's progress and the time
- * available TODAY, what should they do now?"
- */
 export function generateTodayPlan(
   input: GenerateTodayPlanInput,
 ): GenerateTodayPlanResult {
-  const available =
-    Math.max(
-      0,
-      Math.floor(
-        input.availableMinutes,
-      ),
-    );
+  const available = Math.max(
+    0,
+    Math.floor(
+      input.availableMinutes,
+    ),
+  );
 
   if (
     available <
-    MIN_TASK_MINUTES
+    MIN_EMERGENCY_TASK
   ) {
     return {
       tasks: [],
       scheduledMinutes: 0,
-      unusedMinutes:
-        available,
+      unusedMinutes: available,
       subjectsTouched: [],
     };
   }
 
-  const missedSet =
+  const missed =
     new Set(
       input.missedChapterIds ??
         [],
     );
 
   /*
-   * Get one active chapter for each subject.
+   * Exactly ONE active candidate
+   * per subject.
    */
-  const active = SUBJECTS.map(
-    (subject) => {
-      const chapter =
-        getNextChapter(
-          input.chapters,
+  const candidates =
+    SUBJECTS.map(
+      (subject) => {
+        const chapter =
+          getNextChapter(
+            input.chapters,
+            subject,
+          );
+
+        if (!chapter) {
+          return null;
+        }
+
+        const work =
+          getNextWork(
+            chapter,
+          );
+
+        if (!work) {
+          return null;
+        }
+
+        return {
           subject,
-        );
-
-      if (!chapter) {
-        return null;
-      }
-
-      const work =
-        getNextWork(
           chapter,
-        );
+          work,
 
-      if (!work) {
-        return null;
-      }
+          missed:
+            missed.has(
+              chapter.chapterId,
+            ),
+        };
+      },
+    ).filter(
+      (
+        item,
+      ): item is NonNullable<
+        typeof item
+      > => item !== null,
+    );
 
-      return {
-        subject,
-        chapter,
-        work,
-
-        missed:
-          missedSet.has(
-            chapter.chapterId,
-          ),
-      };
-    },
-  ).filter(
-    (
-      item,
-    ): item is NonNullable<
-      typeof item
-    > => item !== null,
-  );
-
-  if (active.length === 0) {
+  if (
+    candidates.length === 0
+  ) {
     return {
       tasks: [],
       scheduledMinutes: 0,
-      unusedMinutes:
-        available,
+      unusedMinutes: available,
       subjectsTouched: [],
     };
   }
 
   /*
-   * Yesterday's missed chapter gets priority,
-   * but it does NOT consume the entire day.
+   * ---------------------------------
+   * HOW MANY SUBJECTS TODAY?
+   * ---------------------------------
    *
-   * The other subjects should still get a chance.
+   * 60m+:
+   * try PCM all three.
+   *
+   * 35-59m:
+   * try two subjects.
+   *
+   * <35m:
+   * one useful task.
    */
-  active.sort(
+  let subjectCount = 1;
+
+  if (available >= 60) {
+    subjectCount =
+      Math.min(
+        3,
+        candidates.length,
+      );
+  } else if (
+    available >= 35
+  ) {
+    subjectCount =
+      Math.min(
+        2,
+        candidates.length,
+      );
+  }
+
+  /*
+   * Missed work gets first choice.
+   *
+   * Otherwise rotate using weightage
+   * only as a tie-breaker.
+   */
+  candidates.sort(
     (a, b) => {
       if (
         a.missed !==
@@ -371,13 +244,6 @@ export function generateTodayPlan(
           : 1;
       }
 
-      /*
-       * Weak/high-value chapters can later
-       * be included here.
-       *
-       * For now weightage acts only as a
-       * tie-breaker.
-       */
       return (
         b.chapter.weightage -
         a.chapter.weightage
@@ -385,235 +251,157 @@ export function generateTodayPlan(
     },
   );
 
-  const targetSubjects =
-    Math.min(
-      desiredSubjectCount(
-        available,
-      ),
-      active.length,
-    );
-
   const selected =
-    active.slice(
+    candidates.slice(
       0,
-      targetSubjects,
+      subjectCount,
     );
 
   const tasks:
     GeneratedTask[] = [];
 
+  /*
+   * Hard duplicate protection.
+   *
+   * Same:
+   * chapter + taskType + date
+   *
+   * can NEVER be generated twice.
+   */
+  const generatedKeys =
+    new Set<string>();
+
   let remaining =
     available;
 
-  /*
-   * PASS 1
-   *
-   * Touch selected subjects once.
-   *
-   * This prevents:
-   *
-   * Kinematics 72m
-   * Kinematics 72m
-   *
-   * while Chemistry/Maths get nothing.
-   */
   for (
-    let i = 0;
-    i < selected.length;
-    i++
+    let index = 0;
+    index <
+    selected.length;
+    index++
   ) {
     const item =
-      selected[i];
+      selected[index];
 
-    const subjectsStill =
+    const subjectsRemaining =
       selected.length -
-      i;
-
-    /*
-     * Reserve enough time so remaining
-     * subjects can still get a useful block.
-     */
-    const reserveForOthers =
-      (subjectsStill - 1) *
-      MIN_TASK_MINUTES;
-
-    const maxAvailableNow =
-      Math.max(
-        0,
-        remaining -
-          reserveForOthers,
-      );
+      index;
 
     if (
-      maxAvailableNow <
-      MIN_TASK_MINUTES
+      remaining <
+      MIN_EMERGENCY_TASK
     ) {
-      continue;
+      break;
     }
 
     /*
-     * Fair share of currently remaining time.
+     * Fair split.
+     *
+     * Example 62 minutes:
+     *
+     * P ~20
+     * C ~21
+     * M ~21
      */
     const fairShare =
       Math.floor(
         remaining /
-          subjectsStill,
+          subjectsRemaining,
       );
+
+    const minimum =
+      available >= 60
+        ? MIN_EMERGENCY_TASK
+        : MIN_NORMAL_TASK;
 
     let minutes =
       Math.min(
+        fairShare,
         item.work.remainingMinutes,
-
         item.work.maxMinutes,
-
-        Math.max(
-          MIN_TASK_MINUTES,
-          Math.min(
-            item.work.targetMinutes,
-            fairShare,
-          ),
-        ),
-
-        maxAvailableNow,
       );
 
-    /*
-     * If the entire remaining piece of this work
-     * is only slightly larger, finish it rather
-     * than leave a tiny tail.
-     */
-    const tail =
-      item.work.remainingMinutes -
-      minutes;
-
     if (
-      tail > 0 &&
-      tail <
-        MIN_TASK_MINUTES &&
-      item.work.remainingMinutes <=
-        maxAvailableNow
+      minutes < minimum
     ) {
-      minutes =
-        item.work.remainingMinutes;
+      /*
+       * If this subject has too little
+       * actual work remaining, taking the
+       * smaller tail is still useful.
+       */
+      if (
+        item.work.remainingMinutes >=
+        MIN_EMERGENCY_TASK
+      ) {
+        minutes =
+          Math.min(
+            item.work.remainingMinutes,
+            fairShare,
+          );
+      } else {
+        continue;
+      }
     }
 
     if (
       minutes <
-      MIN_TASK_MINUTES
+      MIN_EMERGENCY_TASK
     ) {
       continue;
     }
 
-    tasks.push(
-      makeTask({
-        chapter:
-          item.chapter,
+    const key =
+      `${input.date}:${item.chapter.chapterId}:${item.work.taskType}`;
 
-        taskType:
-          item.work.taskType,
+    if (
+      generatedKeys.has(
+        key,
+      )
+    ) {
+      continue;
+    }
 
+    generatedKeys.add(
+      key,
+    );
+
+    tasks.push({
+      chapterId:
+        item.chapter.chapterId,
+
+      subjectSlug:
+        item.subject,
+
+      taskType:
+        item.work.taskType,
+
+      title:
+        item.chapter.name,
+
+      estimatedMinutes:
         minutes,
 
-        date:
-          input.date,
+      scheduledDate:
+        input.date,
 
-        priority:
-          item.missed
-            ? 90
-            : 70,
-      }),
-    );
+      priority:
+        item.missed
+          ? 90
+          : 70,
+    });
 
     remaining -=
       minutes;
   }
 
   /*
-   * PASS 2
+   * Do NOT make a second card for a
+   * chapter already scheduled today.
    *
-   * Use leftover time without creating duplicate
-   * same chapter + same task-type cards.
-   *
-   * We may advance to another subject/chapter
-   * later, but for MVP unused time is safer than
-   * generating repetitive/overloaded tasks.
+   * Extra time remains free for now.
+   * Later this space can be used by
+   * revision / PYQ / backlog intelligently.
    */
-  if (
-    remaining >=
-    MIN_TASK_MINUTES
-  ) {
-    const alreadyScheduled =
-      new Set(
-        tasks.map(
-          (task) =>
-            `${task.chapterId}:${task.taskType}`,
-        ),
-      );
-
-    for (const item of active) {
-      if (
-        remaining <
-        MIN_TASK_MINUTES
-      ) {
-        break;
-      }
-
-      const key =
-        `${item.chapter.chapterId}:${item.work.taskType}`;
-
-      if (
-        alreadyScheduled.has(
-          key,
-        )
-      ) {
-        continue;
-      }
-
-      const minutes =
-        Math.min(
-          remaining,
-
-          item.work.remainingMinutes,
-
-          item.work.maxMinutes,
-        );
-
-      if (
-        minutes <
-        MIN_TASK_MINUTES
-      ) {
-        continue;
-      }
-
-      tasks.push(
-        makeTask({
-          chapter:
-            item.chapter,
-
-          taskType:
-            item.work.taskType,
-
-          minutes,
-
-          date:
-            input.date,
-
-          priority:
-            item.missed
-              ? 85
-              : 65,
-        }),
-      );
-
-      alreadyScheduled.add(
-        key,
-      );
-
-      remaining -=
-        minutes;
-    }
-  }
-
   const scheduledMinutes =
     tasks.reduce(
       (sum, task) =>
@@ -625,19 +413,18 @@ export function generateTodayPlan(
   const subjectsTouched =
     Array.from(
       new Set(
-        tasks
-          .map(
-            (task) =>
-              task.subjectSlug,
-          )
-          .filter(
-            (
-              subject,
-            ): subject is SubjectSlug =>
-              subject !==
-              "general",
-          ),
+        tasks.map(
+          (task) =>
+            task.subjectSlug,
+        ),
       ),
+    ).filter(
+      (
+        subject,
+      ): subject is SubjectSlug =>
+        subject === "physics" ||
+        subject === "chemistry" ||
+        subject === "maths",
     );
 
   return {
