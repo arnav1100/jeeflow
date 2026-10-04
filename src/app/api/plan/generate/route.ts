@@ -66,6 +66,14 @@ export async function POST(req: NextRequest) {
   if (endDate < startDate) return NextResponse.json({ error: "End date must be after the start date." }, { status: 400 });
   const totalDays = daysBetween(startDate, endDate) + 1;
 
+  // Exact daily tasks are generated only for the next 7 days.
+// endDate still represents the student's long-term target window.
+const scheduleEndDate =
+  addDaysYmd(
+    startDate,
+    Math.min(6, totalDays - 1),
+  );
+
   const [
   chaptersList,
   availabilityMap,
@@ -93,6 +101,7 @@ export async function POST(req: NextRequest) {
     userId,
     startDate,
     endDate,
+    scheduleEndDate,
     strategy,
     selectedBuckets,
     customChapterIds: input.customChapterIds,
