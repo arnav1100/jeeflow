@@ -474,10 +474,7 @@ if (input.strategy === "full_syllabus") {
    * If plan cannot fit, preserve the
    * existing trim behaviour.
    */
-  if (
-  !feasibility.feasible &&
-  input.strategy !== "full_syllabus"
-) {
+  if (!feasibility.feasible) {
     const neededH =
       Math.round(
         feasibility.totalRequiredMinutes /
