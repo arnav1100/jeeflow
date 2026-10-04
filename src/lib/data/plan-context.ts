@@ -6,12 +6,14 @@ import {
   chapterPrerequisites,
   availability,
   tests,
+  revisionSchedule,
 } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { format } from "date-fns";
 import type {
   EngineChapter,
   EngineTestEvent,
+  EngineExistingRevision,
   SubjectSlug,
 } from "@/lib/scheduling/types";
 import { getJeeSequenceOrder } from "@/lib/scheduling/jee-sequence";
@@ -232,4 +234,28 @@ export async function buildUpcomingTests(
         t.travelMinutes,
       title: t.title,
     }));
+}
+
+export async function buildExistingRevisions(
+  userId: string,
+): Promise<EngineExistingRevision[]> {
+  const rows = await db
+    .select()
+    .from(revisionSchedule)
+    .where(eq(revisionSchedule.userId, userId));
+
+  return rows.map((row) => ({
+    chapterId: row.chapterId,
+    revisionNumber: row.revisionNumber,
+    intervalDays: row.intervalDays,
+    dueDate:
+      typeof row.dueDate === "string"
+        ? row.dueDate
+        : format(
+            row.dueDate as unknown as Date,
+            "yyyy-MM-dd",
+          ),
+    status:
+      row.status as EngineExistingRevision["status"],
+  }));
 }
