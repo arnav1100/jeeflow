@@ -106,7 +106,7 @@ function estimateChapterTotalMinutes(
 }
 
 function buildCalendar(
-  input: GeneratePlanInput,
+  input: ,
   days: number,
 ): CalendarDay[] {
   const start = parseISO(input.startDate);
@@ -163,12 +163,26 @@ function windowDays(
   );
 }
 
+function scheduleWindowDays(
+  input: GeneratePlanInput,
+): number {
+  const scheduleEnd =
+    input.scheduleEndDate ?? input.endDate;
+
+  return (
+    differenceInCalendarDays(
+      parseISO(scheduleEnd),
+      parseISO(input.startDate),
+    ) + 1
+  );
+}
+
 export function checkFeasibility(
   input: GeneratePlanInput,
 ): FeasibilityResult {
   const calendar = buildCalendar(
     input,
-    windowDays(input),
+    scheduleWindowDays(input),
   );
 
   const totalAvailable =
@@ -417,7 +431,10 @@ if (input.strategy === "full_syllabus") {
   }
 
   const nDays =
-    windowDays(input);
+    Math.max(
+      1,
+      scheduleWindowDays(input),
+    );
 
   const calendar =
     buildCalendar(
