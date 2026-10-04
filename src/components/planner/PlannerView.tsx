@@ -7,6 +7,7 @@ import {
   useState,
 } from "react";
 import { useRouter } from "next/navigation";
+import PlanSetup from "@/components/planner/PlanSetup";
 import { formatMinutesAsHm } from "@/lib/scheduling/lecture-time";
 import {
   addDaysYmd,
@@ -238,6 +239,9 @@ export default function PlannerView({
     savingDurations,
     setSavingDurations,
   ] = useState(false);
+
+    const [setupDone, setSetupDone] =
+    useState(false);
 
   const tasksByDate = useMemo(() => {
     const map = new Map<
@@ -809,6 +813,29 @@ export default function PlannerView({
       strategy === "bucket_strategy" &&
       buckets.length === 0
     );
+
+    if (!setupDone) {
+    return (
+      <div className="pb-6">
+        <h1 className="text-2xl font-extrabold">
+          Planner
+        </h1>
+
+        <p className="mt-1 text-sm text-[#64748B]">
+          First, tell us where your preparation currently stands.
+        </p>
+
+        <div className="mt-4">
+          <PlanSetup
+            onComplete={() => {
+              setSetupDone(true);
+              router.refresh();
+            }}
+          />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="pb-6">
