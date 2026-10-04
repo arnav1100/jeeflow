@@ -9,6 +9,7 @@ import { getSession } from "@/lib/auth";
 import { db } from "@/db";
 import {
   userChapters,
+  profiles,
 } from "@/db/schema";
 
 import { buildEngineChapters } from "@/lib/data/plan-context";
@@ -80,7 +81,31 @@ export async function GET() {
     );
   }
 
-  const chapters =
+    const profileRows = await db
+    .select()
+    .from(profiles)
+    .where(
+      eq(
+        profiles.userId,
+        session.userId,
+      ),
+    )
+    .limit(1);
+
+  const profile =
+    profileRows[0];
+
+  const strategyConfig =
+    (profile?.strategyConfig as Record<
+      string,
+      unknown
+    >) ?? {};
+
+  const setupCompleted =
+    strategyConfig.plannerSetupCompleted ===
+    true;
+  
+ const chapters =
     await buildEngineChapters(
       session.userId,
     );
@@ -149,8 +174,9 @@ export async function GET() {
     );
 
   return NextResponse.json({
-    subjects,
-  });
+  setupCompleted,
+  subjects,
+});
 }
 
 /**
@@ -230,6 +256,41 @@ export async function PATCH(
       .where(
         eq(
           userChapters.userId,
+          session.userId,
+        ),
+      );
+
+        const profileRows = await db
+      .select()
+      .from(profiles)
+      .where(
+        eq(
+          profiles.userId,
+          session.userId,
+        ),
+      )
+      .limit(1);
+
+    const currentConfig =
+      (profileRows[0]?.strategyConfig as Record<
+        string,
+        unknown
+      >) ?? {};
+
+    await db
+      .update(profiles)
+      .set({
+        strategyConfig: {
+          ...currentConfig,
+          plannerSetupCompleted:
+            true,
+        },
+        updatedAt:
+          new Date(),
+      })
+      .where(
+        eq(
+          profiles.userId,
           session.userId,
         ),
       );
@@ -499,6 +560,41 @@ export async function PATCH(
       }
     },
   );
+
+    const profileRows = await db
+    .select()
+    .from(profiles)
+    .where(
+      eq(
+        profiles.userId,
+        session.userId,
+      ),
+    )
+    .limit(1);
+
+  const currentConfig =
+    (profileRows[0]?.strategyConfig as Record<
+      string,
+      unknown
+    >) ?? {};
+
+  await db
+    .update(profiles)
+    .set({
+      strategyConfig: {
+        ...currentConfig,
+        plannerSetupCompleted:
+          true,
+      },
+      updatedAt:
+        new Date(),
+    })
+    .where(
+      eq(
+        profiles.userId,
+        session.userId,
+      ),
+    );
 
   return NextResponse.json({
     ok: true,
