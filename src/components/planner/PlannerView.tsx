@@ -776,21 +776,15 @@ export default function PlannerView({
   }
 
   const totalH = plan
-    ? hours(
-        plan.totalRequiredMinutes,
-      )
+    ? hours(plan.totalRequiredMinutes)
     : 0;
 
   const availH = plan
-    ? hours(
-        plan.totalAvailableMinutes,
-      )
+    ? hours(plan.totalAvailableMinutes)
     : 0;
 
   const loadPercent =
-    plan &&
-    plan.totalAvailableMinutes >
-      0
+    plan && plan.totalAvailableMinutes > 0
       ? Math.round(
           (plan.totalRequiredMinutes /
             plan.totalAvailableMinutes) *
@@ -800,38 +794,21 @@ export default function PlannerView({
 
   const planDays = plan
     ? Math.round(
-        (Date.parse(
-          plan.endDate,
-        ) -
-          Date.parse(
-            plan.startDate,
-          )) /
+        (Date.parse(plan.endDate) -
+          Date.parse(plan.startDate)) /
           86400000,
       ) + 1
     : 0;
 
-  
-
-        return (
-          Number.isFinite(value) &&
-          value > 0 &&
-          Math.round(
-            value * 60,
-          ) >=
-            chapter.lectureProgressMinutes
-        );
-      },
-    );
-
   const canGenerate =
-  !generating &&
-  !savingDurations &&
-  days >= 1 &&
-  days <= 365 &&
-  !(
-    strategy === "bucket_strategy" &&
-    buckets.length === 0
-  );
+    !generating &&
+    !savingDurations &&
+    days >= 1 &&
+    days <= 365 &&
+    !(
+      strategy === "bucket_strategy" &&
+      buckets.length === 0
+    );
 
   return (
     <div className="pb-6">
