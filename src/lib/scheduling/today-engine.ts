@@ -17,11 +17,39 @@ const MAX_LECTURE = 90;
 const MAX_PRACTICE = 60;
 const MAX_PYQ = 60;
 
+const MAX_REVISION = 30;
+
+export interface DueRevision {
+  chapterId: string;
+  subjectSlug: SubjectSlug;
+  title: string;
+  revisionNumber: number;
+  minutes: number;
+}
+
 export interface GenerateTodayPlanInput {
   date: string;
+
+  /*
+   * Safety buffer should already have
+   * been removed from this capacity.
+   */
   availableMinutes: number;
+
   chapters: EngineChapter[];
+
+  /*
+   * Yesterday / older missed chapters.
+   * These receive priority, but don't
+   * consume the entire day.
+   */
   missedChapterIds?: string[];
+
+  /*
+   * At most one due/overdue revision
+   * is supplied for the day.
+   */
+  dueRevision?: DueRevision | null;
 }
 
 export interface GenerateTodayPlanResult {
@@ -29,18 +57,35 @@ export interface GenerateTodayPlanResult {
   scheduledMinutes: number;
   unusedMinutes: number;
   subjectsTouched: SubjectSlug[];
+  revisionScheduled: boolean;
 }
 
+/*
+ * Lecture + Practice + PYQ are the
+ * chapter's core study workload.
+ *
+ * Revision is handled separately.
+ */
 function hasCoreWork(
   chapter: EngineChapter,
 ): boolean {
   return (
-    chapter.remainingLectureMinutes > 0 ||
-    chapter.practicePendingMinutes > 0 ||
-    chapter.pyqPendingMinutes > 0
+    chapter.remainingLectureMinutes >
+      0 ||
+    chapter.practicePendingMinutes >
+      0 ||
+    chapter.pyqPendingMinutes >
+      0
   );
 }
 
+/*
+ * Recommended sequence applies only
+ * to chapters which still have work.
+ *
+ * Random previously-studied chapters
+ * are naturally skipped.
+ */
 function getNextChapter(
   chapters: EngineChapter[],
   subject: SubjectSlug,
@@ -49,8 +94,11 @@ function getNextChapter(
     chapters
       .filter(
         (chapter) =>
-          chapter.subjectSlug === subject &&
-          hasCoreWork(chapter),
+          chapter.subjectSlug ===
+            subject &&
+          hasCoreWork(
+            chapter,
+          ),
       )
       .sort(
         (a, b) =>
@@ -60,11 +108,21 @@ function getNextChapter(
   );
 }
 
+/*
+ * Inside an active chapter:
+ *
+ * Lecture
+ *   ↓
+ * Practice / DPP
+ *   ↓
+ * PYQ
+ */
 function getNextWork(
   chapter: EngineChapter,
 ) {
   if (
-    chapter.remainingLectureMinutes > 0
+    chapter.remainingLectureMinutes >
+    0
   ) {
     return {
       taskType:
@@ -79,7 +137,8 @@ function getNextWork(
   }
 
   if (
-    chapter.practicePendingMinutes > 0
+    chapter.practicePendingMinutes >
+    0
   ) {
     return {
       taskType:
@@ -94,7 +153,8 @@ function getNextWork(
   }
 
   if (
-    chapter.pyqPendingMinutes > 0
+    chapter.pyqPendingMinutes >
+    0
   ) {
     return {
       taskType:
@@ -114,12 +174,19 @@ function getNextWork(
 export function generateTodayPlan(
   input: GenerateTodayPlanInput,
 ): GenerateTodayPlanResult {
-  const available = Math.max(
-    0,
-    Math.floor(
-      input.availableMinutes,
-    ),
-  );
+  /*
+   * --------------------------------------------
+   * TOTAL USABLE TIME
+   * --------------------------------------------
+   */
+
+  const available =
+    Math.max(
+      0,
+      Math.floor(
+        input.availableMinutes,
+      ),
+    );
 
   if (
     available <
@@ -128,10 +195,51 @@ export function generateTodayPlan(
     return {
       tasks: [],
       scheduledMinutes: 0,
-      unusedMinutes: available,
+      unusedMinutes:
+        available,
       subjectsTouched: [],
+      revisionScheduled:
+        false,
     };
   }
+
+  /*
+   * --------------------------------------------
+   * REVISION RESERVE
+   * --------------------------------------------
+   *
+   * Very short day:
+   * focus on core study.
+   *
+   * >= 90 usable minutes:
+   * reserve up to 30 minutes for one
+   * due/overdue revision.
+   */
+
+  const revisionMinutes =
+    input.dueRevision &&
+    available >= 90
+      ? Math.min(
+          MAX_REVISION,
+          Math.max(
+            MIN_EMERGENCY_TASK,
+            input.dueRevision.minutes,
+          ),
+        )
+      : 0;
+
+  const coreAvailable =
+    Math.max(
+      0,
+      available -
+        revisionMinutes,
+    );
+
+  /*
+   * --------------------------------------------
+   * MISSED WORK
+   * --------------------------------------------
+   */
 
   const missed =
     new Set(
@@ -140,9 +248,11 @@ export function generateTodayPlan(
     );
 
   /*
-   * Exactly ONE active candidate
-   * per subject.
+   * --------------------------------------------
+   * ONE ACTIVE CANDIDATE PER SUBJECT
+   * --------------------------------------------
    */
+
   const candidates =
     SUBJECTS.map(
       (subject) => {
@@ -184,54 +294,54 @@ export function generateTodayPlan(
       > => item !== null,
     );
 
-  if (
-    candidates.length === 0
-  ) {
-    return {
-      tasks: [],
-      scheduledMinutes: 0,
-      unusedMinutes: available,
-      subjectsTouched: [],
-    };
-  }
+  const tasks:
+    GeneratedTask[] = [];
 
   /*
-   * ---------------------------------
-   * HOW MANY SUBJECTS TODAY?
-   * ---------------------------------
+   * --------------------------------------------
+   * SUBJECT COUNT
+   * --------------------------------------------
    *
-   * 60m+:
+   * >= 60 core minutes:
    * try PCM all three.
    *
-   * 35-59m:
-   * try two subjects.
+   * 35–59:
+   * two subjects.
    *
-   * <35m:
-   * one useful task.
+   * <35:
+   * one subject.
    */
-  let subjectCount = 1;
 
-  if (available >= 60) {
-    subjectCount =
-      Math.min(
-        3,
-        candidates.length,
-      );
-  } else if (
-    available >= 35
+  let subjectCount = 0;
+
+  if (
+    candidates.length > 0
   ) {
-    subjectCount =
-      Math.min(
-        2,
-        candidates.length,
-      );
+    subjectCount = 1;
+
+    if (
+      coreAvailable >= 60
+    ) {
+      subjectCount =
+        Math.min(
+          3,
+          candidates.length,
+        );
+    } else if (
+      coreAvailable >= 35
+    ) {
+      subjectCount =
+        Math.min(
+          2,
+          candidates.length,
+        );
+    }
   }
 
   /*
-   * Missed work gets first choice.
+   * Missed chapter gets first preference.
    *
-   * Otherwise rotate using weightage
-   * only as a tie-breaker.
+   * Weightage only breaks ties.
    */
   candidates.sort(
     (a, b) => {
@@ -257,22 +367,21 @@ export function generateTodayPlan(
       subjectCount,
     );
 
-  const tasks:
-    GeneratedTask[] = [];
-
   /*
-   * Hard duplicate protection.
-   *
-   * Same:
-   * chapter + taskType + date
-   *
-   * can NEVER be generated twice.
+   * Same date + same chapter +
+   * same task-type can never occur twice.
    */
   const generatedKeys =
     new Set<string>();
 
   let remaining =
-    available;
+    coreAvailable;
+
+  /*
+   * --------------------------------------------
+   * CORE PCM PASS
+   * --------------------------------------------
+   */
 
   for (
     let index = 0;
@@ -295,13 +404,7 @@ export function generateTodayPlan(
     }
 
     /*
-     * Fair split.
-     *
-     * Example 62 minutes:
-     *
-     * P ~20
-     * C ~21
-     * M ~21
+     * Fairly divide remaining core budget.
      */
     const fairShare =
       Math.floor(
@@ -310,25 +413,26 @@ export function generateTodayPlan(
       );
 
     const minimum =
-      available >= 60
+      coreAvailable >= 60
         ? MIN_EMERGENCY_TASK
         : MIN_NORMAL_TASK;
 
     let minutes =
       Math.min(
         fairShare,
+
         item.work.remainingMinutes,
+
         item.work.maxMinutes,
       );
 
+    /*
+     * Small remaining tail is allowed
+     * if it is still useful.
+     */
     if (
       minutes < minimum
     ) {
-      /*
-       * If this subject has too little
-       * actual work remaining, taking the
-       * smaller tail is still useful.
-       */
       if (
         item.work.remainingMinutes >=
         MIN_EMERGENCY_TASK
@@ -395,16 +499,66 @@ export function generateTodayPlan(
   }
 
   /*
-   * Do NOT make a second card for a
-   * chapter already scheduled today.
+   * --------------------------------------------
+   * REVISION PASS
+   * --------------------------------------------
    *
-   * Extra time remains free for now.
-   * Later this space can be used by
-   * revision / PYQ / backlog intelligently.
+   * Max one revision per day for MVP.
+   *
+   * Revision is added only AFTER the
+   * core PCM slots are protected.
    */
+
+  let revisionScheduled =
+    false;
+
+  if (
+    revisionMinutes >=
+      MIN_EMERGENCY_TASK &&
+    input.dueRevision
+  ) {
+    tasks.push({
+      chapterId:
+        input.dueRevision.chapterId,
+
+      subjectSlug:
+        input.dueRevision.subjectSlug,
+
+      taskType:
+        "revision",
+
+      title:
+        input.dueRevision.title,
+
+      estimatedMinutes:
+        revisionMinutes,
+
+      scheduledDate:
+        input.date,
+
+      priority:
+        60,
+
+      revisionNumber:
+        input.dueRevision.revisionNumber,
+    });
+
+    revisionScheduled =
+      true;
+  }
+
+  /*
+   * --------------------------------------------
+   * FINAL SUMMARY
+   * --------------------------------------------
+   */
+
   const scheduledMinutes =
     tasks.reduce(
-      (sum, task) =>
+      (
+        sum,
+        task,
+      ) =>
         sum +
         task.estimatedMinutes,
       0,
@@ -413,18 +567,27 @@ export function generateTodayPlan(
   const subjectsTouched =
     Array.from(
       new Set(
-        tasks.map(
-          (task) =>
-            task.subjectSlug,
-        ),
+        tasks
+          .filter(
+            (task) =>
+              task.taskType !==
+              "revision",
+          )
+          .map(
+            (task) =>
+              task.subjectSlug,
+          ),
       ),
     ).filter(
       (
         subject,
       ): subject is SubjectSlug =>
-        subject === "physics" ||
-        subject === "chemistry" ||
-        subject === "maths",
+        subject ===
+          "physics" ||
+        subject ===
+          "chemistry" ||
+        subject ===
+          "maths",
     );
 
   return {
@@ -440,5 +603,7 @@ export function generateTodayPlan(
       ),
 
     subjectsTouched,
+
+    revisionScheduled,
   };
 }
